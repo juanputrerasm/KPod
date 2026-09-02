@@ -1,0 +1,23 @@
+<!-- Small-size variant of KPod.svg: the tile and the K only.
+     The packed slabs carry too much detail to survive 16-32px, where they
+     render as a smudge beside the K. Used for the 16/24/32 entries of the .ico. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF4058"/>
+      <stop offset="55%" stop-color="#D4153F"/>
+      <stop offset="100%" stop-color="#7D0033"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="18" y="18" width="988" height="988" rx="145" fill="url(#bg)"/>
+
+  <!-- Same K geometry as the full icon, re-centred (the full icon offsets it to
+       make room for the slabs) and scaled up to fill the tile. No shadow: at
+       these sizes it only muddies the edges. -->
+  <g fill="#FFFFFF" transform="translate(512,512) scale(1.06) translate(-572.5,-510)">
+    <rect x="255" y="195" width="150" height="630"/>
+    <polygon points="405,505 690,195 855,195 545,535"/>
+    <polygon points="455,555 705,825 890,825 535,455"/>
+  </g>
+</svg>

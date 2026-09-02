@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup Condition="'$(TargetFramework)' != 'net48'">
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <ApplicationUseCompatibleTextRendering>false</ApplicationUseCompatibleTextRendering>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net48'">
+    <!-- DPI awareness comes from the manifest on .NET Framework. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- No app.config needed; the manifest carries everything. -->
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFrameworks>net10.0-windows;net48</TargetFrameworks>
+    <RootNamespace>KPod.Windows</RootNamespace>
+    <AssemblyName>KPod</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationIcon>Assets\KPod.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net48'">
+    <ProjectReference Include="..\KPod.Core\KPod.Core.csproj" />
+  </ItemGroup>
+
+  <!-- .NET Framework has no single-file publish, so the core sources are
+       compiled straight into the executable instead. One file, no merge tool. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <Compile Include="..\KPod.Core\**\*.cs"
+             Exclude="..\KPod.Core\bin\**\*.cs;..\KPod.Core\obj\**\*.cs"
+             Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\KPod.Core\Assets\metalcr2.act"
+                      LogicalName="KPod.Core.Assets.metalcr2.act" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ApplicationIcon covers Explorer and the taskbar; forms need the icon at
+         runtime, so it is embedded as well. -->
+    <EmbeddedResource Include="Assets\KPod.ico" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <Using Include="KPod.Core.Compat" />
+  </ItemGroup>
+
+</Project>

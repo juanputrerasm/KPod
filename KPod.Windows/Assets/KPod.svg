@@ -1,0 +1,40 @@
+<!-- KPod application icon. The K and the crimson tile match KPodman's red icon
+     so the two read as one family; the packed slabs tell them apart in a
+     taskbar, and they stand for the entries packed inside a POD archive. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF4058"/>
+      <stop offset="55%" stop-color="#D4153F"/>
+      <stop offset="100%" stop-color="#7D0033"/>
+    </linearGradient>
+
+    <linearGradient id="slabFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F6D2DA"/>
+    </linearGradient>
+
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#4A0020" flood-opacity="0.30"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded crimson app tile -->
+  <rect x="18" y="18" width="988" height="988" rx="145" fill="url(#bg)"/>
+
+  <!-- Main K, scaled down and shifted left to leave room for the slabs.
+       Same split-arm geometry as the shared red icon. -->
+  <g fill="#FFFFFF" filter="url(#softShadow)"
+     transform="translate(196,186) scale(0.86) translate(-255,-195)">
+    <rect x="255" y="195" width="150" height="630"/>
+    <polygon points="405,505 690,195 855,195 545,535"/>
+    <polygon points="455,555 705,825 890,825 535,455"/>
+  </g>
+
+  <!-- Packed slabs: the entries inside the archive, stacked front to back -->
+  <g filter="url(#softShadow)">
+    <rect x="596" y="596" width="330" height="72" rx="18" fill="url(#slabFill)" opacity="0.75"/>
+    <rect x="596" y="692" width="330" height="72" rx="18" fill="url(#slabFill)" opacity="0.88"/>
+    <rect x="596" y="788" width="330" height="72" rx="18" fill="url(#slabFill)"/>
+  </g>
+</svg>
