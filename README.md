@@ -13,9 +13,15 @@ Velocity*, *Fury3* and their relatives. It reads and writes both the classic POD
 directory and the Community Patch 3 **POD1-64** extension with 64-byte entry
 names. It also reads and explicitly authors `POD2`; `EPD` remains read-only.
 
-It is the Windows-native port of [JPod](../JPod), the Java 17 original, and
-matches it byte for byte: the same archives, the same `.inf` and `.lst` reports,
-the same format names.
+It is the Windows-native port of
+[JPod](https://github.com/juanputrerasm/JPod), the Java 17 original, and matches
+it byte for byte: the same archives, the same `.inf` and `.lst` reports, the same
+format names.
+
+![KPod browsing ALASKA.POD with an ACT palette previewed](docs/screenshot.jpg)
+
+*Browsing `ALASKA.POD` with the 256-colour VGA palette of `ART\8THR00.ACT`
+shown as a swatch grid.*
 
 ---
 
@@ -28,7 +34,7 @@ the same format names.
 | `POD2` | Nocturne, 4x4 Evo 1 & 2 | browse, preview, extract, explicit save/conversion, CRC, timestamp and audit history |
 | `EPD` | Fly! | browse, preview, extract |
 
-There is no POD3+ authoring, no EPD authoring, and no MOD playback.
+There is no POD3+ authoring.
 
 ---
 
@@ -169,7 +175,11 @@ The two are identical in behaviour; pick whichever suits the machine.
 
 ## Getting started
 
-Download `KPod.exe` and run it. No installer, no dependencies, one file.
+Prebuilt binaries are on the
+[Releases](https://github.com/juanputrerasm/KPod/releases) page. Download
+`KPod.exe` and run it. No installer, no dependencies, one file. The .NET
+Framework 4.8 build is the one to take unless you specifically want the .NET 10
+build, which is published alongside it.
 
 1. **Open...**, or drag a `.pod` onto the exe, or pass a path on the command line.
 2. Double-click a folder row to expand it, or use **Expand +** to open everything.
@@ -265,7 +275,7 @@ target pulls in a NuGet package, which is what keeps both builds to one file.
 |---|---|---|
 | `KPod.Core` | `net48`, `net10.0` | Archive reading and writing, image and palette decoding, reports, manifests, `pod.ini`, preferences, and the folder-browser model. No Windows API, so it runs anywhere |
 | `KPod.Windows` | `net48`, `net10.0-windows` | WinForms UI, plus the Windows-only pieces under `Platform/` (MCI audio) |
-| `KPod.Tests` | `net48`, `net10.0` | xUnit tests for `KPod.Core`. 94 tests, runnable on any OS |
+| `KPod.Tests` | `net48`, `net10.0` | xUnit tests for `KPod.Core`. 112 tests, runnable on any OS |
 
 `KPod.Core` must never reference `System.Drawing` or `System.Windows.Forms`. The
 RAW decoder returns `int[]` pixels and only `KPod.Windows` turns them into a
@@ -276,19 +286,6 @@ RAW decoder returns `int[]` pixels and only `KPod.Windows` turns them into a
 `KPod.Windows/Assets/build-icon.sh` rebuilds `KPod.ico` from the two SVGs using
 stock macOS tools. The full artwork is used at 48px and above; the small entries
 use the K-only variant, because the slabs turn to mush below 32px.
-
----
-
-## Credits
-
-By Juan Pablo Utreras **"Kmaster"**, [mtm2.com/~kmaster](http://mtm2.com/~kmaster)
-Based on WinPod by MDMRE.
-
-Licensed under the [Apache License 2.0](LICENSE).
-
-Monster Truck Madness, Terminal Velocity, Fury3, Hellbender, CPR, Nocturne and
-4x4 Evo are trademarks of their respective owners. This is an unofficial,
-community-made utility with no affiliation to Microsoft or Terminal Reality.
 
 ---
 
@@ -304,8 +301,23 @@ structures as machine-readable data.
 
 ## References
 
-- [JPod](../JPod) - the Java 17 original
-- [KPodman](../KPodman) - the POD mounting utility this shares its build with
+- [JPod](https://github.com/juanputrerasm/JPod) - the Java 17 original
+- [KPodman](https://github.com/juanputrerasm/KPodman) - the POD mounting utility
+  this shares its build with
 - [MTM2 Engine Content Limits](https://www.mtm2.com/~mtmg/misc/ENGINE_LIMITS.md)
 - [EPD Format Reference](https://github.com/jopadan/termpod/wiki/EPD-Format-Reference)
 - [Pod 2 Format Reference](https://github.com/jopadan/termpod/wiki/Pod-2-Format-Reference)
+
+---
+
+## Credits
+
+Developed by **Juan Pablo Utreras** for the Monster Truck Madness Guild.
+
+Based on the original WinPod by MDMRE.
+
+Licensed under the [Apache License 2.0](LICENSE).
+
+Monster Truck Madness, Terminal Velocity, Fury3, Hellbender, CPR, Nocturne and
+4x4 Evo are trademarks of their respective owners. This is an unofficial,
+community-made utility with no affiliation to Microsoft or Terminal Reality.

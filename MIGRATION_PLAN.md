@@ -1,8 +1,8 @@
 # KPod migration plan
 
-KPod is the Windows-native port of [JPod](../JPod), the Java 17 Terminal Reality
+KPod is the Windows-native port of [JPod](https://github.com/juanputrerasm/JPod), the Java 17 Terminal Reality
 POD archive utility. It stands in the same relation to JPod that
-[KPodman](../KPodman) stands to JPodman: same behaviour, same file formats, same
+[KPodman](https://github.com/juanputrerasm/KPodman) stands to JPodman: same behaviour, same file formats, same
 on-disk artefacts, rewritten in C# on .NET Framework 4.8 so it runs on a stock
 Windows install with nothing to download.
 
@@ -565,8 +565,8 @@ dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x64 \
 
 ## References
 
-- [JPod](../JPod) - the Java 17 original this port follows
-- [KPodman](../KPodman) - the build, compat and packaging template used throughout
+- [JPod](https://github.com/juanputrerasm/JPod) - the Java 17 original this port follows
+- [KPodman](https://github.com/juanputrerasm/KPodman) - the build, compat and packaging template used throughout
 - [JSPod POD1-64 format notes](../JSPod/docs/POD1_64_FORMAT.md) - the description
   of the extended directory, and the record of what is still unknown
 - [MTM2 Engine Content Limits](https://www.mtm2.com/~mtmg/misc/ENGINE_LIMITS.md)
