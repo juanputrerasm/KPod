@@ -191,24 +191,20 @@ public static class RawImageDecoder
     }
 
     /// <summary>True when the name has a raw image extension this decoder supports.</summary>
-    public static bool IsRawImage(string name)
-    {
-        string upper = name.ToUpperInvariant();
-        return upper.EndsWith(".RAW", StringComparison.Ordinal)
-            || upper.EndsWith(".CLR", StringComparison.Ordinal);
-    }
+    public static bool IsRawImage(string name) =>
+        name.EndsWith(".RAW", StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(".CLR", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>True when the name has an ACT palette extension.</summary>
     public static bool IsActPalette(string name) =>
-        name.ToUpperInvariant().EndsWith(".ACT", StringComparison.Ordinal);
+        name.EndsWith(".ACT", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>True when the extension suggests plain text content.</summary>
     public static bool IsTextFile(string name)
     {
-        string upper = name.ToUpperInvariant();
         foreach (string extension in TextExtensions)
         {
-            if (upper.EndsWith(extension, StringComparison.Ordinal))
+            if (name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }

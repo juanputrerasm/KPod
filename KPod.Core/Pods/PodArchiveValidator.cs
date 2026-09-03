@@ -20,7 +20,11 @@ public static class PodArchiveValidator
         try
         {
             actual = PodArchiveWriter.ActualFormat(blobs, requested);
-            PodArchiveWriter.BuildBytes(comment, blobs, new PodWriteOptions(requested, null, []));
+
+            // Checks the layout only. This used to build the whole archive and throw
+            // the bytes away, which made renaming one entry cost a full serialization
+            // of every payload.
+            PodArchiveWriter.ValidateLayout(comment, blobs, new PodWriteOptions(requested, null, []));
         }
         catch (Exception ex) when (ex is ArgumentException or OverflowException)
         {
@@ -47,7 +51,7 @@ public static class PodArchiveValidator
             if (!archive.IsEntryChecksumValid(entry))
                 errors.Add("POD2 entry checksum mismatch: " + entry.Name);
         }
-        if (!archive.IsChecksumValid) errors.Add("POD2 archive checksum mismatch");
+        if (!archive.VerifyArchiveChecksum()) errors.Add("POD2 archive checksum mismatch");
         PodEntry[] byOffset = archive.Entries.OrderBy(e => e.Offset).ToArray();
         for (int i = 1; i < byOffset.Length; i++)
         {

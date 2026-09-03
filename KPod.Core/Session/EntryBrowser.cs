@@ -1,19 +1,105 @@
+using System.Collections;
 using System.Globalization;
 using KPod.Core.Pods;
 
 namespace KPod.Core.Session;
 
-/// <summary>One entry held in memory, editable until the archive is saved.</summary>
-public sealed record EditableEntry(string Name, byte[] Data)
+/// <summary>
+/// One entry held by the editor, editable until the archive is saved.
+///
+/// <para>The payload is either held directly, for an entry added from disk or from a
+/// manifest, or referenced in the open archive and read on demand. An archive entry
+/// that is only browsed, sorted and filtered never has its bytes read at all, which is
+/// what keeps opening a 200 MB POD from costing 200 MB.</para>
+///
+/// <para>A class rather than a record: a lazily-read payload has no business taking
+/// part in value equality.</para>
+/// </summary>
+public sealed class EditableEntry
 {
+    private readonly byte[]? _data;
+    private readonly IPodDataSource? _source;
+    private readonly long _offset;
+
+    /// <summary>An entry whose bytes are already in hand.</summary>
+    public EditableEntry(string name, byte[] data)
+    {
+        Name = name;
+        _data = data ?? throw new ArgumentNullException(nameof(data));
+        Length = data.Length;
+    }
+
+    /// <summary>An entry that reads its bytes from an open archive when asked.</summary>
+    public EditableEntry(string name, IPodDataSource source, long offset, int length)
+    {
+        Name = name;
+        _source = source ?? throw new ArgumentNullException(nameof(source));
+        _offset = offset;
+        Length = length;
+    }
+
+    private EditableEntry(EditableEntry other, string name)
+    {
+        Name = name;
+        _data = other._data;
+        _source = other._source;
+        _offset = other._offset;
+        Length = other.Length;
+        RawNameField = other.RawNameField;
+        EmbeddedPaletteName = other.EmbeddedPaletteName;
+        Timestamp = other.Timestamp;
+    }
+
+    public string Name { get; }
+
+    /// <summary>Payload size. Always known, and never reads the payload.</summary>
+    public int Length { get; }
+
+    /// <summary>
+    /// The payload, read from the archive each time for an entry that has not been
+    /// materialized. Deliberately uncached: caching would refill memory with the
+    /// whole archive over a session of previewing entries, and every caller here
+    /// either writes the bytes straight out or hands them to a preview.
+    /// </summary>
+    public byte[] Data => _data ?? _source!.ReadExact(_offset, Length);
+
     /// <summary>
     /// The directory name field this entry was read from, carried so a re-save
     /// reproduces it byte for byte. Null for entries added from disk or from a
     /// manifest, which have no original field.
     /// </summary>
     public byte[]? RawNameField { get; init; }
+
     public string? EmbeddedPaletteName { get; init; }
+
     public uint Timestamp { get; init; } = unchecked((uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+    /// <summary>
+    /// The same entry under a different name. Keeps the payload reference as it is,
+    /// so renaming an entry in a large archive stays free.
+    /// </summary>
+    public EditableEntry WithName(string name) => new(this, name);
+
+    /// <summary>
+    /// Writes the payload to a stream without holding it in memory. The editor's
+    /// entry list can mix archive-backed and disk-backed entries, so extraction goes
+    /// through here rather than seeking in one source file.
+    /// </summary>
+    public void CopyTo(Stream target, byte[] scratch)
+    {
+        if (_data is not null)
+        {
+            target.Write(_data, 0, _data.Length);
+            return;
+        }
+
+        _source!.CopyTo(_offset, Length, target, scratch);
+    }
+
+    /// <summary>The entry as a writer blob, without materializing the payload.</summary>
+    public PodBlob ToBlob() => _data is not null
+        ? new PodBlob(Name, _data, RawNameField, EmbeddedPaletteName, Timestamp)
+        : new PodBlob(Name, _source!, _offset, Length, RawNameField, EmbeddedPaletteName, Timestamp);
 }
 
 /// <summary>Which way a sorted column runs, or that no column is sorted.</summary>
@@ -54,6 +140,12 @@ public sealed record BrowserRow(
 ///
 /// <para>All of it is plain logic over names and sizes, so it lives here rather
 /// than in the form and can be tested without Windows.</para>
+///
+/// <para>Everything a refresh needs per entry, its split path, its base name and its
+/// description, is computed once into <see cref="EnsureCaches"/> arrays and reused.
+/// These run on every keystroke in the filter box, and the descriptions in particular
+/// used to be recomputed inside the sort comparator, so an archive of a few thousand
+/// entries recomputed them tens of thousands of times per sort.</para>
 /// </summary>
 public sealed class EntryBrowser
 {
@@ -62,11 +154,21 @@ public sealed class EntryBrowser
     public const int SizeColumn = 1;
     public const int DescriptionColumn = 2;
 
-    private readonly List<EditableEntry> _entries = [];
+    private readonly EntryList _entries = new();
     private readonly List<BrowserRow> _rows = [];
     private readonly HashSet<string> _collapsedFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _knownFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _explicitFolders = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Every file index under a folder path, so selecting a folder heading does not rescan.</summary>
+    private readonly Dictionary<string, int[]> _folderFiles = new(StringComparer.OrdinalIgnoreCase);
+
+    private FolderNode? _lastTree;
+    private int _cacheVersion = -1;
+    private string[][] _pathParts = [];
+    private string[] _baseNames = [];
+    private string[] _descriptions = [];
+    private int[] _viewRowOf = [];
 
     private string _filter = string.Empty;
 
@@ -90,20 +192,45 @@ public sealed class EntryBrowser
         set => _filter = value ?? string.Empty;
     }
 
-    /// <summary>Total archive size the current entry list would produce on disk.</summary>
+    /// <summary>
+    /// Total archive size the current entry list would produce on disk.
+    ///
+    /// <para>Read on every list refresh, so it walks the entries directly. Building a
+    /// <see cref="PodBlob"/> per entry to ask the writer, as this used to, normalized
+    /// and re-measured every name on every keystroke.</para>
+    /// </summary>
     public long ProjectedArchiveSize
     {
         get
         {
-            IReadOnlyList<PodBlob> blobs = ToBlobs();
-            int entrySize = PodArchiveWriter.FormatFor(blobs) == PodFormat.Pod1Extended ? 72 : 40;
+            int entrySize = ProjectedFormat == PodFormat.Pod1Extended
+                ? PodArchiveWriter.LongNameFieldSize + 8
+                : PodArchiveWriter.ClassicNameFieldSize + 8;
             long total = 4 + 80 + ((long)_entries.Count * entrySize);
             foreach (EditableEntry entry in _entries)
             {
-                total += entry.Data.Length;
+                total += entry.Length;
             }
 
             return total;
+        }
+    }
+
+    /// <summary>The POD1 layout the current names would require.</summary>
+    public PodFormat ProjectedFormat
+    {
+        get
+        {
+            foreach (EditableEntry entry in _entries)
+            {
+                if (PodArchiveWriter.RequiredNameFieldBytes(entry.Name, entry.EmbeddedPaletteName)
+                    > PodArchiveWriter.ClassicNameFieldSize)
+                {
+                    return PodFormat.Pod1Extended;
+                }
+            }
+
+            return PodFormat.Pod1;
         }
     }
 
@@ -122,15 +249,32 @@ public sealed class EntryBrowser
         _rows.Clear();
         _collapsedFolders.Clear();
         _knownFolders.Clear();
+        _folderFiles.Clear();
+        _lastTree = null;
     }
 
     /// <summary>Rebuilds <see cref="Rows"/> from the entries, filter and sort state.</summary>
     public void Refresh()
     {
+        EnsureCaches();
         FolderNode root = BuildFolderTree();
         EnsureKnownFoldersCollapsed(root);
+
+        string filter = _filter.Trim();
+        if (filter.Length > 0)
+        {
+            MarkMatches(root, filter);
+        }
+
         _rows.Clear();
-        AppendRows(root, 0, _filter.Trim().ToLowerInvariant(), _rows);
+        AppendRows(root, 0, filter, _rows);
+
+        // Kept so a folder selection can ask what is underneath a heading. Indexed
+        // on demand rather than here: most refreshes are filter keystrokes that
+        // never select a folder.
+        _lastTree = root;
+        _folderFiles.Clear();
+        IndexViewRows();
     }
 
     /// <summary>
@@ -241,19 +385,15 @@ public sealed class EntryBrowser
         return row.IsFolder ? -1 : row.SourceIndex;
     }
 
-    /// <summary>The view row showing an entry, or -1 when it is hidden.</summary>
-    public int ToViewRow(int sourceIndex)
-    {
-        for (int i = 0; i < _rows.Count; i++)
-        {
-            if (!_rows[i].IsFolder && _rows[i].SourceIndex == sourceIndex)
-            {
-                return i;
-            }
-        }
-
-        return -1;
-    }
+    /// <summary>
+    /// The view row showing an entry, or -1 when it is hidden.
+    ///
+    /// <para>Answered from an index built by <see cref="Refresh"/>. Reapplying a
+    /// selection after a refresh calls this once per selected entry, and scanning the
+    /// rows each time made that quadratic in the size of a selected folder.</para>
+    /// </summary>
+    public int ToViewRow(int sourceIndex) =>
+        sourceIndex >= 0 && sourceIndex < _viewRowOf.Length ? _viewRowOf[sourceIndex] : -1;
 
     /// <summary>
     /// The entry indices behind a selection of view rows, sorted ascending.
@@ -276,12 +416,14 @@ public sealed class EntryBrowser
                 continue;
             }
 
-            string prefix = row.FolderPath + "/";
-            for (int i = 0; i < _entries.Count; i++)
+            // The folder tree already knows what is underneath each folder, so this
+            // no longer re-normalizes every entry name for every selected heading.
+            EnsureFolderFiles();
+            if (_folderFiles.TryGetValue(row.FolderPath, out int[]? files))
             {
-                if (NormalizeArchivePath(_entries[i].Name).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                foreach (int index in files)
                 {
-                    indices.Add(i);
+                    indices.Add(index);
                 }
             }
         }
@@ -289,14 +431,13 @@ public sealed class EntryBrowser
         return [.. indices];
     }
 
-    /// <summary>The entries as writer blobs, in archive order.</summary>
+    /// <summary>The entries as writer blobs, in archive order, without reading payloads.</summary>
     public IReadOnlyList<PodBlob> ToBlobs()
     {
         List<PodBlob> blobs = new(_entries.Count);
         foreach (EditableEntry entry in _entries)
         {
-            blobs.Add(new PodBlob(entry.Name, entry.Data, entry.RawNameField,
-                entry.EmbeddedPaletteName, entry.Timestamp));
+            blobs.Add(entry.ToBlob());
         }
 
         return blobs;
@@ -307,7 +448,40 @@ public sealed class EntryBrowser
     /// collapsing before the first <see cref="Refresh"/> would otherwise be undone
     /// by that refresh, which treats an unseen folder as collapsed by default.
     /// </summary>
-    private void RegisterFolders() => EnsureKnownFoldersCollapsed(BuildFolderTree());
+    private void RegisterFolders()
+    {
+        EnsureCaches();
+        EnsureKnownFoldersCollapsed(BuildFolderTree());
+    }
+
+    /// <summary>
+    /// Recomputes the per-entry values a refresh needs, but only when the entry list
+    /// has actually changed. Filtering and sorting do not change it, so a burst of
+    /// keystrokes reuses one set of descriptions.
+    /// </summary>
+    private void EnsureCaches()
+    {
+        if (_cacheVersion == _entries.Version)
+        {
+            return;
+        }
+
+        int count = _entries.Count;
+        _pathParts = new string[count][];
+        _baseNames = new string[count];
+        _descriptions = new string[count];
+        for (int i = 0; i < count; i++)
+        {
+            EditableEntry entry = _entries[i];
+            string clean = entry.Name.Replace('\0', ' ').Trim();
+            _pathParts[i] = clean.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+            int slash = Math.Max(clean.LastIndexOf('/'), clean.LastIndexOf('\\'));
+            _baseNames[i] = slash >= 0 ? clean.Substring(slash + 1) : clean;
+            _descriptions[i] = PodEntryDescriber.Describe(entry.Name, entry.Length);
+        }
+
+        _cacheVersion = _entries.Version;
+    }
 
     private FolderNode BuildFolderTree()
     {
@@ -320,7 +494,7 @@ public sealed class EntryBrowser
         }
         for (int i = 0; i < _entries.Count; i++)
         {
-            string[] parts = SplitEntryName(_entries[i].Name);
+            string[] parts = _pathParts[i];
             FolderNode cursor = root;
             for (int part = 0; part < parts.Length - 1; part++)
             {
@@ -353,6 +527,44 @@ public sealed class EntryBrowser
         }
     }
 
+    /// <summary>
+    /// Stamps each folder with whether it or anything under it matches the filter, in
+    /// one pass. Asking that question per folder used to re-walk the whole subtree
+    /// underneath it, so a deep tree was walked once per ancestor.
+    /// </summary>
+    private bool MarkMatches(FolderNode node, string filter)
+    {
+        bool matched = Contains(node.Name, filter);
+        foreach (int fileIndex in node.FileIndices)
+        {
+            if (Contains(_entries[fileIndex].Name, filter))
+            {
+                matched = true;
+                break;
+            }
+        }
+
+        foreach (FolderNode child in node.Folders)
+        {
+            // Not short-circuited: every child still has to be stamped.
+            if (MarkMatches(child, filter))
+            {
+                matched = true;
+            }
+        }
+
+        node.Matches = matched;
+        return matched;
+    }
+
+    /// <summary>
+    /// Case-insensitive substring test. POD names are ASCII, so folding case up
+    /// rather than down, as the previous <c>ToLowerInvariant</c> pair did, cannot
+    /// change the answer, and this allocates nothing.
+    /// </summary>
+    private static bool Contains(string text, string filter) =>
+        text.Length > 0 && text.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
+
     private void AppendRows(FolderNode node, int depth, string filter, List<BrowserRow> rows)
     {
         foreach (FolderItem item in OrderedItems(node, filter))
@@ -371,13 +583,12 @@ public sealed class EntryBrowser
             }
             else
             {
-                EditableEntry entry = _entries[item.FileIndex];
                 rows.Add(BrowserRow.File(
                     item.FileIndex,
                     item.FileName!,
                     depth,
-                    entry.Data.Length,
-                    PodEntryDescriber.Describe(entry.Name, entry.Data.Length)));
+                    _entries[item.FileIndex].Length,
+                    _descriptions[item.FileIndex]));
             }
         }
     }
@@ -387,7 +598,7 @@ public sealed class EntryBrowser
         List<FolderItem> items = [];
         foreach (FolderNode folder in node.Folders)
         {
-            if (MatchesFolderOrDescendant(folder, filter))
+            if (filter.Length == 0 || folder.Matches)
             {
                 items.Add(new FolderItem(folder, -1, null));
             }
@@ -395,11 +606,9 @@ public sealed class EntryBrowser
 
         foreach (int fileIndex in node.FileIndices)
         {
-            EditableEntry entry = _entries[fileIndex];
-            if (filter.Length == 0
-                || entry.Name.ToLowerInvariant().Contains(filter, StringComparison.Ordinal))
+            if (filter.Length == 0 || Contains(_entries[fileIndex].Name, filter))
             {
-                items.Add(new FolderItem(null, fileIndex, BaseName(entry.Name)));
+                items.Add(new FolderItem(null, fileIndex, _baseNames[fileIndex]));
             }
         }
 
@@ -423,15 +632,35 @@ public sealed class EntryBrowser
 
         int byValue = SortColumn switch
         {
-            NameColumn => string.CompareOrdinal(
-                SortName(left).ToLowerInvariant(), SortName(right).ToLowerInvariant()),
+            NameColumn => CompareLowerOrdinal(SortName(left), SortName(right)),
             SizeColumn => SortSize(left).CompareTo(SortSize(right)),
-            DescriptionColumn => string.CompareOrdinal(
-                SortDescription(left).ToLowerInvariant(), SortDescription(right).ToLowerInvariant()),
+            DescriptionColumn => CompareLowerOrdinal(SortDescription(left), SortDescription(right)),
             _ => 0,
         };
 
         return SortDirection == SortDirection.Ascending ? byValue : -byValue;
+    }
+
+    /// <summary>
+    /// Ordinal comparison of two strings folded to lower case, which is exactly what
+    /// comparing their <c>ToLowerInvariant</c> forms produced, without allocating a
+    /// lower-cased copy of both operands for every one of the O(n log n) comparisons
+    /// a sort performs.
+    /// </summary>
+    private static int CompareLowerOrdinal(string left, string right)
+    {
+        int shared = Math.Min(left.Length, right.Length);
+        for (int i = 0; i < shared; i++)
+        {
+            char a = char.ToLowerInvariant(left[i]);
+            char b = char.ToLowerInvariant(right[i]);
+            if (a != b)
+            {
+                return a - b;
+            }
+        }
+
+        return left.Length - right.Length;
     }
 
     private static int OrderKey(FolderItem item) =>
@@ -443,48 +672,116 @@ public sealed class EntryBrowser
         item.Folder is not null ? item.Folder.Name : item.FileName!;
 
     private long SortSize(FolderItem item) =>
-        item.Folder is not null ? 0L : _entries[item.FileIndex].Data.Length;
+        item.Folder is not null ? 0L : _entries[item.FileIndex].Length;
 
     private string SortDescription(FolderItem item) =>
-        item.Folder is not null
-            ? "Folder"
-            : PodEntryDescriber.Describe(_entries[item.FileIndex].Name, _entries[item.FileIndex].Data.Length);
+        item.Folder is not null ? "Folder" : _descriptions[item.FileIndex];
 
-    private bool MatchesFolderOrDescendant(FolderNode folder, string filter)
+    /// <summary>
+    /// Records every file index under each folder path, the first time a folder
+    /// selection asks for one after a refresh.
+    /// </summary>
+    private void EnsureFolderFiles()
     {
-        if (filter.Length == 0 || folder.Name.ToLowerInvariant().Contains(filter, StringComparison.Ordinal))
+        if (_folderFiles.Count > 0 || _lastTree is null)
         {
-            return true;
+            return;
         }
 
-        foreach (int fileIndex in folder.FileIndices)
+        List<int> collected = [];
+        foreach (FolderNode child in _lastTree.Folders)
         {
-            if (_entries[fileIndex].Name.ToLowerInvariant().Contains(filter, StringComparison.Ordinal))
-            {
-                return true;
-            }
+            CollectFolderFiles(child, collected);
         }
-
-        foreach (FolderNode child in folder.Folders)
-        {
-            if (MatchesFolderOrDescendant(child, filter))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
-    private static string BaseName(string entryName)
+    private void CollectFolderFiles(FolderNode node, List<int> scratch)
     {
-        string clean = entryName.Replace('\0', ' ').Trim();
-        int slash = Math.Max(clean.LastIndexOf('/'), clean.LastIndexOf('\\'));
-        return slash >= 0 ? clean.Substring(slash + 1) : clean;
+        int start = scratch.Count;
+        scratch.AddRange(node.FileIndices);
+        foreach (FolderNode child in node.Folders)
+        {
+            CollectFolderFiles(child, scratch);
+        }
+
+        int[] own = new int[scratch.Count - start];
+        scratch.CopyTo(start, own, 0, own.Length);
+        _folderFiles[node.Path] = own;
+    }
+
+    /// <summary>Maps each entry index to the view row showing it, or -1 when hidden.</summary>
+    private void IndexViewRows()
+    {
+        if (_viewRowOf.Length != _entries.Count)
+        {
+            _viewRowOf = new int[_entries.Count];
+        }
+
+        for (int i = 0; i < _viewRowOf.Length; i++)
+        {
+            _viewRowOf[i] = -1;
+        }
+
+        for (int i = 0; i < _rows.Count; i++)
+        {
+            BrowserRow row = _rows[i];
+            if (!row.IsFolder && row.SourceIndex >= 0 && row.SourceIndex < _viewRowOf.Length)
+            {
+                _viewRowOf[row.SourceIndex] = i;
+            }
+        }
     }
 
     private static string NormalizeArchivePath(string path) =>
         path.Replace('\\', '/').Replace('\0', ' ').Trim();
+
+    /// <summary>
+    /// The entry list, counting its own mutations so the browser's per-entry caches
+    /// know when they are stale. The list is handed out for the form to edit
+    /// directly, so there is no other place to notice a change.
+    /// </summary>
+    private sealed class EntryList : IList<EditableEntry>
+    {
+        private readonly List<EditableEntry> _items = [];
+
+        /// <summary>Bumped by every mutation.</summary>
+        public int Version { get; private set; }
+
+        public EditableEntry this[int index]
+        {
+            get => _items[index];
+            set { _items[index] = value; Version++; }
+        }
+
+        public int Count => _items.Count;
+
+        public bool IsReadOnly => false;
+
+        public void Add(EditableEntry item) { _items.Add(item); Version++; }
+
+        public void Clear() { _items.Clear(); Version++; }
+
+        public bool Contains(EditableEntry item) => _items.Contains(item);
+
+        public void CopyTo(EditableEntry[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
+
+        public IEnumerator<EditableEntry> GetEnumerator() => _items.GetEnumerator();
+
+        public int IndexOf(EditableEntry item) => _items.IndexOf(item);
+
+        public void Insert(int index, EditableEntry item) { _items.Insert(index, item); Version++; }
+
+        public bool Remove(EditableEntry item)
+        {
+            bool removed = _items.Remove(item);
+            if (removed) Version++;
+            return removed;
+        }
+
+        public void RemoveAt(int index) { _items.RemoveAt(index); Version++; }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 
     /// <summary>One folder in the tree built from entry names.</summary>
     private sealed class FolderNode(string name, string path, int firstSourceIndex)
@@ -494,6 +791,9 @@ public sealed class EntryBrowser
         public string Path { get; } = path;
 
         public int FirstSourceIndex { get; private set; } = firstSourceIndex;
+
+        /// <summary>Set by <see cref="MarkMatches"/> when a filter is active.</summary>
+        public bool Matches { get; set; }
 
         private readonly Dictionary<string, FolderNode> _byName = new(StringComparer.OrdinalIgnoreCase);
 

@@ -44,14 +44,22 @@ public enum PodFormat
 /// <para>Nothing else changes: the payload is still a concatenation of byte ranges
 /// addressed by each entry's offset and length.</para>
 /// </summary>
-public sealed class PodArchive
+public sealed class PodArchive : IDisposable
 {
-    private readonly byte[] _bytes;
+    private readonly IPodDataSource _data;
+
+    /// <summary>
+    /// Name lookups, built on first use. An archive with thousands of entries is
+    /// searched repeatedly while previewing art, and a linear scan there costs a
+    /// <see cref="PodEntry.Title"/> comparison per entry per lookup.
+    /// </summary>
+    private Dictionary<string, PodEntry>? _byName;
+    private Dictionary<string, PodEntry>? _byTitle;
 
     internal PodArchive(
         PodFormat format,
         string comment,
-        byte[] bytes,
+        IPodDataSource data,
         IReadOnlyList<PodEntry> entries,
         byte[]? rawCommentField = null,
         uint checksum = 0,
@@ -59,12 +67,18 @@ public sealed class PodArchive
     {
         Format = format;
         Comment = comment;
-        _bytes = bytes;
+        _data = data;
         Entries = entries;
         RawCommentField = rawCommentField;
         Checksum = checksum;
         AuditEntries = auditEntries ?? [];
     }
+
+    /// <summary>
+    /// The bytes behind the archive. Held open for as long as the archive is, so
+    /// callers must dispose the archive when they are done with it.
+    /// </summary>
+    public IPodDataSource Data => _data;
 
     public PodFormat Format { get; }
 
@@ -84,11 +98,19 @@ public sealed class PodArchive
 
     public IReadOnlyList<PodAuditEntry> AuditEntries { get; }
 
-    public bool IsChecksumValid => Format != PodFormat.Pod2
-        || Checksum == PodArchiveWriter.Crc32Mpeg2(_bytes, 8, _bytes.Length - 8);
+    /// <summary>
+    /// Verifies the POD2 whole-archive checksum, streaming the file rather than
+    /// holding it. Non-POD2 archives carry no checksum and always pass.
+    ///
+    /// <para>A method rather than a property: it reads every byte of the archive, and
+    /// a property that does that invites being called from a UI binding or a loop.</para>
+    /// </summary>
+    public bool VerifyArchiveChecksum() => Format != PodFormat.Pod2
+        || Checksum == PodArchiveWriter.Crc32Mpeg2(_data, 8, _data.Length - 8);
 
+    /// <summary>Verifies one POD2 entry's checksum, streaming its payload.</summary>
     public bool IsEntryChecksumValid(PodEntry entry) => Format != PodFormat.Pod2
-        || entry.Checksum == PodArchiveWriter.Crc32Mpeg2(GetEntryBytes(entry));
+        || entry.Checksum == PodArchiveWriter.Crc32Mpeg2(_data, entry.Offset, entry.Length);
 
     public string FormatDisplayName => Format switch
     {
@@ -117,47 +139,56 @@ public sealed class PodArchive
         return matches;
     }
 
-    /// <summary>Full-name lookup, case-insensitive.</summary>
+    /// <summary>Full-name lookup, case-insensitive. First match wins on duplicates.</summary>
     public PodEntry? FindEntry(string name)
     {
-        foreach (PodEntry entry in Entries)
-        {
-            if (string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
-            {
-                return entry;
-            }
-        }
-
-        return null;
+        _byName ??= BuildIndex(static entry => entry.Name);
+        return _byName.TryGetValue(name, out PodEntry? entry) ? entry : null;
     }
 
-    /// <summary>File-name-only lookup, case-insensitive.</summary>
+    /// <summary>File-name-only lookup, case-insensitive. First match wins on duplicates.</summary>
     public PodEntry? FindEntryByTitle(string name)
     {
-        foreach (PodEntry entry in Entries)
-        {
-            if (string.Equals(entry.Title, name, StringComparison.OrdinalIgnoreCase))
-            {
-                return entry;
-            }
-        }
-
-        return null;
+        _byTitle ??= BuildIndex(static entry => entry.Title);
+        return _byTitle.TryGetValue(name, out PodEntry? entry) ? entry : null;
     }
 
     /// <summary>
-    /// The entry's payload. Bounds were validated at parse time, so the range is
-    /// always inside the archive. Returns a copy rather than a span so the same
-    /// code compiles for .NET Framework, where Encoding has no span overloads.
+    /// Indexes the entries by one of their names. Shipped and community archives do
+    /// repeat a name, so the first occurrence is kept, matching what the linear scan
+    /// these replaced used to return.
     /// </summary>
-    public byte[] GetEntryBytes(PodEntry entry)
+    private Dictionary<string, PodEntry> BuildIndex(Func<PodEntry, string> key)
     {
-        int offset = checked((int)entry.Offset);
-        int length = checked((int)entry.Length);
-        byte[] payload = new byte[length];
-        Array.Copy(_bytes, offset, payload, 0, length);
-        return payload;
+        Dictionary<string, PodEntry> index = new(Entries.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (PodEntry entry in Entries)
+        {
+            string name = key(entry);
+            if (!index.ContainsKey(name))
+            {
+                index.Add(name, entry);
+            }
+        }
+
+        return index;
     }
+
+    /// <summary>
+    /// The entry's payload, read from the archive on demand. Bounds were validated at
+    /// parse time, so the range is always inside the archive.
+    ///
+    /// <para>Prefer <see cref="CopyEntryTo"/> when the bytes are only going to be
+    /// written somewhere: this materializes the whole payload as one array.</para>
+    /// </summary>
+    public byte[] GetEntryBytes(PodEntry entry) =>
+        _data.ReadExact(entry.Offset, checked((int)entry.Length));
+
+    /// <summary>Streams an entry's payload to a stream without holding it in memory.</summary>
+    public void CopyEntryTo(PodEntry entry, Stream target, byte[] scratch) =>
+        _data.CopyTo(entry.Offset, entry.Length, target, scratch);
+
+    /// <summary>Releases the archive file handle.</summary>
+    public void Dispose() => _data.Dispose();
 }
 
 /// <summary>One file inside a POD archive.</summary>
@@ -190,7 +221,15 @@ public sealed record PodEntry(string Name, long Length, long Offset)
     /// </summary>
     public string? EmbeddedPaletteName => PodNameField.SecondString(RawNameField);
 
-    /// <summary>File name without any directory part, upper-cased.</summary>
+    /// <summary>
+    /// File name without any directory part, upper-cased.
+    ///
+    /// <para>Deliberately not cached in a field. This is a record, so a field would
+    /// join its value equality, and two otherwise identical entries would stop
+    /// comparing equal as soon as one of them had its title read. The repeated cost
+    /// this would have saved is gone anyway: <see cref="PodArchive.FindEntryByTitle"/>
+    /// now indexes the titles once instead of recomputing them per lookup.</para>
+    /// </summary>
     public string Title
     {
         get

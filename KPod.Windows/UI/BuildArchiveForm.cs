@@ -27,7 +27,15 @@ internal sealed class BuildArchiveForm : Form
         _folder.Text = session.SourceFolderPath ?? string.Empty;
         _comment.Text = session.ArchiveComment;
 
-        Button browse = new() { Text = "Browse...", AutoSize = true, Dock = DockStyle.Right };
+        // Anchor rather than Dock: inside a table cell, Anchor is what lets a button
+        // keep the size its own text asks for.
+        Button browse = new()
+        {
+            Text = "Browse...",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(8, 0, 0, 0),
+        };
         browse.Click += (_, _) =>
         {
             string? chosen = FolderPicker.Choose(this, "Choose Output Folder", _folder.Text);
@@ -63,12 +71,6 @@ internal sealed class BuildArchiveForm : Form
             Close();
         };
 
-        TableLayoutPanel folderRow = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        folderRow.Controls.Add(_folder, 0, 0);
-        folderRow.Controls.Add(browse, 1, 0);
-
         FlowLayoutPanel buttons = new()
         {
             Dock = DockStyle.Fill,
@@ -78,28 +80,39 @@ internal sealed class BuildArchiveForm : Form
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(ok);
 
+        // Flat on purpose: a nested TableLayoutPanel holding the field and its Browse
+        // button left the button with no visible text, so every control sits directly
+        // in this table instead.
         TableLayoutPanel layout = new()
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 4,
             Padding = new Padding(12, 12, 12, 8),
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // captions
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));  // fields
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // Browse
         for (int i = 0; i < 3; i++)
         {
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         }
 
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(Caption("Output folder:"), 0, 0);
-        layout.Controls.Add(folderRow, 1, 0);
-        layout.Controls.Add(Caption("Filename:"), 0, 1);
+        layout.Controls.Add(DialogLayout.Caption("Output folder:"), 0, 0);
+        layout.Controls.Add(_folder, 1, 0);
+        layout.Controls.Add(browse, 2, 0);
+
+        layout.Controls.Add(DialogLayout.Caption("Filename:"), 0, 1);
         layout.Controls.Add(_name, 1, 1);
-        layout.Controls.Add(Caption("POD Comment:"), 0, 2);
+        layout.SetColumnSpan(_name, 2);
+
+        layout.Controls.Add(DialogLayout.Caption("POD Comment:"), 0, 2);
         layout.Controls.Add(_comment, 1, 2);
+        layout.SetColumnSpan(_comment, 2);
+
         layout.Controls.Add(buttons, 1, 3);
+        layout.SetColumnSpan(buttons, 2);
 
         Controls.Add(layout);
         AcceptButton = ok;
@@ -111,6 +124,4 @@ internal sealed class BuildArchiveForm : Form
 
     internal string Comment => _comment.Text;
 
-    private static Label Caption(string text) =>
-        new() { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 8, 0) };
 }

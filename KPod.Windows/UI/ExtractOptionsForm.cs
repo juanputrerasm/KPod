@@ -8,7 +8,11 @@ namespace KPod.Windows.UI;
 /// </summary>
 internal sealed class ExtractOptionsForm : Form
 {
-    private readonly TextBox _folder = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _folder = new()
+    {
+        Dock = DockStyle.Fill,
+        AccessibleName = "Destination folder",
+    };
     private readonly CheckBox _preserveFolders = new()
     {
         Text = "Preserve folder structure",
@@ -35,7 +39,15 @@ internal sealed class ExtractOptionsForm : Form
         _folder.Text = session.TargetFolderPath ?? string.Empty;
         _preserveFolders.Checked = session.PreserveExtractFolderStructure;
 
-        Button browse = new() { Text = "Browse...", AutoSize = true, Dock = DockStyle.Right };
+        // Anchor rather than Dock: inside a table cell, Anchor is what lets a button
+        // keep the size its own text asks for.
+        Button browse = new()
+        {
+            Text = "Browse...",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(8, 0, 0, 0),
+        };
         browse.Click += (_, _) =>
         {
             string? chosen = FolderPicker.Choose(this, "Choose Extract Destination", _folder.Text);
@@ -67,20 +79,6 @@ internal sealed class ExtractOptionsForm : Form
             Close();
         };
 
-        TableLayoutPanel folderRow = new()
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            RowCount = 1,
-        };
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        folderRow.Controls.Add(
-            new Label { Text = "Destination:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
-        folderRow.Controls.Add(_folder, 1, 0);
-        folderRow.Controls.Add(browse, 2, 0);
-
         FlowLayoutPanel buttons = new()
         {
             Dock = DockStyle.Fill,
@@ -90,20 +88,34 @@ internal sealed class ExtractOptionsForm : Form
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(ok);
 
+        // Every control sits directly in this table. An earlier version put the
+        // caption, the field and the Browse button together in a nested
+        // TableLayoutPanel, and the two controls WinForms draws itself, the label and
+        // the button, came out with no text at all. The TextBox was unaffected
+        // because it is a native control that paints its own window.
         TableLayoutPanel layout = new()
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 1,
+            ColumnCount = 3,
             RowCount = 3,
             Padding = new Padding(12, 12, 12, 8),
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // caption
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));  // field
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // Browse
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(folderRow, 0, 0);
-        layout.Controls.Add(_preserveFolders, 0, 1);
-        layout.Controls.Add(buttons, 0, 2);
+
+        layout.Controls.Add(DialogLayout.Caption("Destination:"), 0, 0);
+        layout.Controls.Add(_folder, 1, 0);
+        layout.Controls.Add(browse, 2, 0);
+
+        layout.Controls.Add(_preserveFolders, 1, 1);
+        layout.SetColumnSpan(_preserveFolders, 2);
+
+        layout.Controls.Add(buttons, 1, 2);
+        layout.SetColumnSpan(buttons, 2);
 
         Controls.Add(layout);
         AcceptButton = ok;

@@ -80,16 +80,30 @@ public static class PodEntryDescriber
     /// <summary>
     /// True when the entry lives under a <c>DATA</c> folder, which is how a CPR
     /// track definition is told apart from an MTM truck definition.
+    ///
+    /// <para>Scans the name in place rather than upper-casing and splitting it, which
+    /// allocated three objects per call on a path that runs per entry.</para>
     /// </summary>
     private static bool IsDataSubfolderEntry(string entryName)
     {
-        string[] parts = entryName.Replace('\\', '/').ToUpperInvariant().Split('/');
-        for (int i = 0; i < parts.Length - 1; i++)
+        int start = 0;
+        for (int i = 0; i < entryName.Length; i++)
         {
-            if (parts[i] == "DATA")
+            char c = entryName[i];
+            if (c is not ('/' or '\\'))
+            {
+                continue;
+            }
+
+            // Only segments with a separator after them are folders, which is why
+            // the scan stops at the last separator and never sees the file name.
+            if (i - start == 4
+                && string.Compare(entryName, start, "DATA", 0, 4, StringComparison.OrdinalIgnoreCase) == 0)
             {
                 return true;
             }
+
+            start = i + 1;
         }
 
         return false;

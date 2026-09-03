@@ -61,20 +61,6 @@ internal sealed class SearchForm : Form
         Button close = NavButton("Close", Close);
         close.DialogResult = DialogResult.Cancel;
 
-        TableLayoutPanel queryRow = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        queryRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        queryRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        queryRow.Controls.Add(
-            new Label
-            {
-                Text = "Search for:",
-                AutoSize = true,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(0, 0, 8, 0),
-                TextAlign = ContentAlignment.MiddleLeft,
-            }, 0, 0);
-        queryRow.Controls.Add(_query, 1, 0);
-
         FlowLayoutPanel options = new() { Dock = DockStyle.Fill, WrapContents = false };
         options.Controls.Add(_searchNames);
         options.Controls.Add(_searchSizes);
@@ -101,21 +87,32 @@ internal sealed class SearchForm : Form
         TableLayoutPanel layout = new()
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 4,
             Padding = new Padding(8),
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // caption
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));  // content
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // buttons
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        layout.Controls.Add(queryRow, 0, 0);
+
+        // The caption belongs in this grid, not in a nested row panel, or it sizes
+        // its cell and then paints nothing. See the note in MainForm's centre panel.
+        layout.Controls.Add(DialogLayout.Caption("Search for:"), 0, 0);
+        layout.Controls.Add(_query, 1, 0);
+
+        // Only the query row is indented by the caption column; everything below it
+        // spans back to the left edge.
         layout.Controls.Add(options, 0, 1);
+        layout.SetColumnSpan(options, 2);
         layout.Controls.Add(_results, 0, 2);
+        layout.SetColumnSpan(_results, 2);
         layout.Controls.Add(_status, 0, 3);
-        layout.Controls.Add(buttons, 1, 0);
+        layout.SetColumnSpan(_status, 2);
+        layout.Controls.Add(buttons, 2, 0);
         layout.SetRowSpan(buttons, 3);
 
         Controls.Add(layout);
@@ -208,7 +205,7 @@ internal sealed class SearchForm : Form
         for (int i = 0; i < _entries.Count; i++)
         {
             EditableEntry entry = _entries[i];
-            string size = entry.Data.Length.ToString(CultureInfo.InvariantCulture);
+            string size = entry.Length.ToString(CultureInfo.InvariantCulture);
             bool nameMatch = _searchNames.Checked && Matches(entry.Name, needle);
             bool sizeMatch = _searchSizes.Checked && Matches(size, needle);
             if (!nameMatch && !sizeMatch)
@@ -217,7 +214,7 @@ internal sealed class SearchForm : Form
             }
 
             ListViewItem item = new(entry.Name);
-            item.SubItems.Add(entry.Data.Length.ToString("N0", CultureInfo.CurrentCulture));
+            item.SubItems.Add(entry.Length.ToString("N0", CultureInfo.CurrentCulture));
             _results.Items.Add(item);
             _matchIndices.Add(i);
         }

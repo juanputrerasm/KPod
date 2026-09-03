@@ -71,7 +71,15 @@ internal sealed class RawDimensionsForm : Form
             _palettes.SelectedIndex = Math.Max(0, Math.Min(palettes.DefaultIndex, _palettes.Items.Count - 1));
         }
 
-        Button swap = new() { Text = "Swap", AutoSize = true, Dock = DockStyle.Left };
+        // Anchor rather than Dock: inside a table cell, Anchor is what lets a button
+        // keep the size its own text asks for.
+        Button swap = new()
+        {
+            Text = "Swap",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 0, 0, 0),
+        };
         swap.Click += (_, _) => (_width.Value, _height.Value) = (_height.Value, _width.Value);
 
         Button ok = new() { Text = "OK", AutoSize = true, Margin = new Padding(4, 0, 0, 0) };
@@ -118,14 +126,14 @@ internal sealed class RawDimensionsForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(header, 0, 0);
         layout.SetColumnSpan(header, 2);
-        layout.Controls.Add(Caption("Suggested sizes:"), 0, 1);
+        layout.Controls.Add(DialogLayout.Caption("Suggested sizes:"), 0, 1);
         layout.Controls.Add(_suggestions, 1, 1);
-        layout.Controls.Add(Caption("Width:"), 0, 2);
+        layout.Controls.Add(DialogLayout.Caption("Width:"), 0, 2);
         layout.Controls.Add(_width, 1, 2);
-        layout.Controls.Add(Caption("Height:"), 0, 3);
+        layout.Controls.Add(DialogLayout.Caption("Height:"), 0, 3);
         layout.Controls.Add(_height, 1, 3);
         layout.Controls.Add(swap, 1, 4);
-        layout.Controls.Add(Caption("Palette:"), 0, 5);
+        layout.Controls.Add(DialogLayout.Caption("Palette:"), 0, 5);
         layout.Controls.Add(_palettes, 1, 5);
         layout.Controls.Add(buttons, 1, 6);
 
@@ -161,8 +169,6 @@ internal sealed class RawDimensionsForm : Form
         Close();
     }
 
-    private static Label Caption(string text) =>
-        new() { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 8, 0) };
 
     /// <summary>A width and height pair as it reads in the suggestion list.</summary>
     private sealed record DimensionChoice(int Width, int Height)

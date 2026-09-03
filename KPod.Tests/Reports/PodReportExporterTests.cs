@@ -94,7 +94,7 @@ public class PodReportExporterTests
         {
             SourceFolderPath = Path.GetDirectoryName(podPath),
             SourceFileName = Path.GetFileName(podPath),
-            OpenArchive = PodArchiveReader.Read(podPath),
+            OpenArchive = PodArchiveReader.Read(File.ReadAllBytes(podPath)),
             ArchiveByteSize = new FileInfo(podPath).Length,
         });
 }

@@ -96,32 +96,32 @@ internal sealed class AudioPlayerForm : Form
         Button close = new() { Text = "Close", DialogResult = DialogResult.Cancel, AutoSize = true };
         close.Click += (_, _) => Close();
 
-        TableLayoutPanel info = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
-        info.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        info.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        info.Controls.Add(new Label { Text = "Length:", AutoSize = true }, 0, 0);
-        info.Controls.Add(_length, 1, 0);
-        info.Controls.Add(new Label { Text = "Position:", AutoSize = true }, 0, 1);
-        info.Controls.Add(_position, 1, 1);
-
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, WrapContents = false };
         buttons.Controls.Add(_play);
         buttons.Controls.Add(_pause);
         buttons.Controls.Add(_stop);
         buttons.Controls.Add(close);
 
+        // The captions live in this grid rather than a nested panel, which would size
+        // its cells from them and then paint nothing. See MainForm's centre panel.
         TableLayoutPanel layout = new()
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 2,
+            ColumnCount = 2,
+            RowCount = 3,
             Padding = new Padding(12),
         };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        layout.Controls.Add(info, 0, 0);
-        layout.Controls.Add(buttons, 0, 1);
+        layout.Controls.Add(DialogLayout.Caption("Length:"), 0, 0);
+        layout.Controls.Add(_length, 1, 0);
+        layout.Controls.Add(DialogLayout.Caption("Position:"), 0, 1);
+        layout.Controls.Add(_position, 1, 1);
+        layout.Controls.Add(buttons, 0, 2);
+        layout.SetColumnSpan(buttons, 2);
 
         Controls.Add(layout);
         CancelButton = close;

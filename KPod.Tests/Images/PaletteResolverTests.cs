@@ -159,7 +159,7 @@ public class PaletteResolverTests
         byte[] bytes = PodFixture.BuildPod1(files);
         byte[] stored = KPod.Core.Compat.PodText.Latin1.GetBytes(paletteName);
         Array.Copy(stored, 0, bytes, 84 + rawName.Length + 1, stored.Length);
-        return PodArchiveReader.Read(temp.WriteFile(Guid.NewGuid().ToString("N") + ".pod", bytes));
+        return PodArchiveReader.Read(bytes);
     }
 
     /// <summary>An ACT whose 256 entries are all the one 6-bit VGA colour.</summary>
@@ -177,5 +177,5 @@ public class PaletteResolverTests
     }
 
     private static PodArchive Archive(TempDir temp, params PodFile[] files) =>
-        PodArchiveReader.Read(temp.WriteFile(Guid.NewGuid().ToString("N") + ".pod", PodFixture.BuildPod1(files)));
+        PodArchiveReader.Read(PodFixture.BuildPod1(files));
 }

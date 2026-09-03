@@ -23,10 +23,30 @@ internal sealed class MainForm : Form
 {
     private static readonly string[] ColumnNames = ["Name", "Size", "Description"];
 
+    /// <summary>
+    /// What the status bar says when there is nothing loaded. The counters are hidden
+    /// in that state rather than shown as zeroes: an empty list has no size worth
+    /// reporting, and the projected size of nothing is the 84-byte POD1 header, which
+    /// is arithmetic rather than information.
+    /// </summary>
+    private const string EmptyStateHint =
+        "No archive open. Open a POD file, or drag files in to start a new one.";
+
     private readonly EntryBrowser _browser = new();
     private readonly PodSession _session = new();
 
-    private AppConfig _config = ConfigStore.Load();
+    private AppConfig? _configCache;
+
+    /// <summary>
+    /// Stored preferences, read on first use. Nothing needs them until a menu is
+    /// opened or a file is, so reading them in the constructor only put a file read
+    /// and a parse in front of the first paint.
+    /// </summary>
+    private AppConfig Config
+    {
+        get => _configCache ??= ConfigStore.Load();
+        set => _configCache = value;
+    }
     private PodArchive? _openedArchive;
     /// <summary>
     /// Set when the archive on disk already repeated an entry name. Those archives
@@ -54,6 +74,22 @@ internal sealed class MainForm : Form
     private string _archiveComment = string.Empty;
     private bool _suppressCommentEvents;
 
+    /// <summary>
+    /// Set while the list's selection is being rebuilt in bulk. Every
+    /// <c>SelectedIndices.Add</c> raises SelectedIndexChanged, and answering it
+    /// means re-reading the whole selection, so restoring a folder's worth of rows
+    /// one at a time would be quadratic. The count is updated once at the end.
+    /// </summary>
+    private bool _suppressSelectionEvents;
+
+    /// <summary>
+    /// Coalesces selection changes. Dragging or shift-clicking across a large range
+    /// raises SelectedIndexChanged once per row, and each answer has to re-read the
+    /// whole selection and expand any folder heading in it, so recomputing on every
+    /// one of them is quadratic in the size of the range being selected.
+    /// </summary>
+    private readonly System.Windows.Forms.Timer _selectionCountTimer = new() { Interval = 50 };
+
     private readonly ListView _list = new()
     {
         Dock = DockStyle.Fill,
@@ -73,6 +109,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _countLabel = new("Files: 0");
     private readonly ToolStripStatusLabel _selectedLabel = new("Selected: 0");
     private readonly ToolStripStatusLabel _dirtyLabel = new(" ") { ForeColor = Color.Firebrick };
+    private readonly StatusStrip _statusStrip = new();
     private readonly ToolStripStatusLabel _activity = new("  ")
     {
         BackColor = Color.FromArgb(0x00, 0xCC, 0x00),
@@ -96,8 +133,8 @@ internal sealed class MainForm : Form
         Controls.Add(BuildMenu());
         Controls.Add(BuildStatusBar());
 
-        RefreshRecentMenu();
         RefreshList();
+        _progress.Text = EmptyStateHint;
 
         if (startupFile is not null)
         {
@@ -123,7 +160,22 @@ internal sealed class MainForm : Form
         _list.Columns[2].Width = 260;
 
         _list.RetrieveVirtualItem += OnRetrieveVirtualItem;
-        _list.SelectedIndexChanged += (_, _) => UpdateSelectedCount();
+        _selectionCountTimer.Tick += (_, _) =>
+        {
+            _selectionCountTimer.Stop();
+            UpdateSelectedCount();
+        };
+        _list.SelectedIndexChanged += (_, _) =>
+        {
+            if (_suppressSelectionEvents)
+            {
+                return;
+            }
+
+            // Restarting the timer means a run of changes settles into one recompute.
+            _selectionCountTimer.Stop();
+            _selectionCountTimer.Start();
+        };
         _list.ColumnClick += (_, e) =>
         {
             _browser.CycleSort(e.Column);
@@ -257,26 +309,89 @@ internal sealed class MainForm : Form
         return layout;
     }
 
+    /// <summary>
+    /// The toolbar: the actions worth a label carry one, the rest are icon-only with
+    /// a tooltip, and the ones that come in families sit behind a split button whose
+    /// face runs the most common of them.
+    ///
+    /// <para>Every action here is also in the menus, so nothing is only reachable
+    /// through a dropdown.</para>
+    /// </summary>
     private ToolStrip BuildToolBar()
     {
-        ToolStrip bar = new() { GripStyle = ToolStripGripStyle.Hidden };
-        bar.Items.Add(ToolButton("Open...", OnOpen));
-        bar.Items.Add(ToolButton("Save", OnSave));
-        bar.Items.Add(ToolButton("Save As...", OnSaveAs));
+        // 16px at 100%, scaled for the monitor so the glyphs stay sharp rather than
+        // being stretched by the ToolStrip.
+        int side = (int)Math.Round(16 * (DeviceDpi / 96.0));
+        ToolStrip bar = new()
+        {
+            GripStyle = ToolStripGripStyle.Hidden,
+            ImageScalingSize = new Size(side, side),
+        };
+
+        bar.Items.Add(SplitButton("New", "Start a new archive", ToolbarIcons.New, side, OnNew,
+            ("&New Archive", OnNew),
+            ("Open Response &List File...", OnOpenManifest)));
+        bar.Items.Add(BuildOpenButton(side));
+        bar.Items.Add(LabelledButton("Save", "Save over the open archive", ToolbarIcons.Save, side, OnSave));
+        bar.Items.Add(LabelledButton("Save As", "Write the entry list to a new archive",
+            ToolbarIcons.SaveAs, side, OnSaveAs));
         bar.Items.Add(new ToolStripSeparator());
-        bar.Items.Add(ToolButton("Expand +", () => { _browser.ExpandAllFolders(); RefreshList(); }));
-        bar.Items.Add(ToolButton("Collapse -", () => { _browser.CollapseAllFolders(); RefreshList(); }));
+
+        bar.Items.Add(SplitButton("Add", "Add files to the archive", ToolbarIcons.AddFiles, side, OnAddFiles,
+            ("Add &Files...", OnAddFiles),
+            ("Add F&older...", OnAddFolder),
+            ("&Create Folder...", OnCreateFolder)));
+        bar.Items.Add(SplitButton("Extract", "Extract the selected entries", ToolbarIcons.Extract,
+            side, OnExtractSelected,
+            ("Extract &Selected...", OnExtractSelected),
+            ("Extract &All...", OnExtractAll)));
+        bar.Items.Add(IconButton("Remove", "Remove the selected entries", ToolbarIcons.Remove,
+            side, OnRemoveSelected));
         bar.Items.Add(new ToolStripSeparator());
-        bar.Items.Add(ToolButton("Add Files...", OnAddFiles));
-        bar.Items.Add(ToolButton("Add Folder...", OnAddFolder));
-        bar.Items.Add(ToolButton("Extract Sel.", OnExtractSelected));
-        bar.Items.Add(ToolButton("Extract All", OnExtractAll));
-        bar.Items.Add(new ToolStripSeparator());
-        bar.Items.Add(ToolButton("Remove", OnRemoveSelected));
-        bar.Items.Add(new ToolStripSeparator());
-        bar.Items.Add(ToolButton("Search", OnSearch));
-        bar.Items.Add(ToolButton("About", OnAbout));
+
+        bar.Items.Add(IconButton("Expand All", "Open every folder", ToolbarIcons.Expand, side,
+            () => WithBusy("Expanding folders...", _browser.ExpandAllFolders)));
+        bar.Items.Add(IconButton("Collapse All", "Close every folder", ToolbarIcons.Collapse, side,
+            () => WithBusy("Collapsing folders...", _browser.CollapseAllFolders)));
+        bar.Items.Add(IconButton("Search", "Find entries by name or size", ToolbarIcons.Search, side, OnSearch));
+
+        // Right-aligned items are laid out from the right edge inwards.
+        ToolStripButton about = IconButton("About", "About KPod", ToolbarIcons.About, side, OnAbout);
+        about.Alignment = ToolStripItemAlignment.Right;
+        bar.Items.Add(about);
         return bar;
+    }
+
+    /// <summary>
+    /// Open, with the recent-file list hanging off its arrow. The entries are built
+    /// each time the dropdown opens rather than kept in step with the File menu's
+    /// copy, because a ToolStripItem can only belong to one parent.
+    /// </summary>
+    private ToolStripSplitButton BuildOpenButton(int side)
+    {
+        ToolStripSplitButton open = SplitButton("Open", "Open a POD or EPD archive",
+            ToolbarIcons.Open, side, OnOpen);
+        open.DropDownOpening += (_, _) =>
+        {
+            open.DropDownItems.Clear();
+            open.DropDownItems.Add(MenuItem("&Open POD...", OnOpen));
+            open.DropDownItems.Add(MenuItem("Open Response &List File...", OnOpenManifest));
+            open.DropDownItems.Add(new ToolStripSeparator());
+            if (Config.RecentOpenedFiles.Count == 0)
+            {
+                open.DropDownItems.Add(new ToolStripMenuItem("(no recent files)") { Enabled = false });
+                return;
+            }
+
+            foreach (string path in Config.RecentOpenedFiles)
+            {
+                string capture = path;
+                ToolStripMenuItem item = new(Path.GetFileName(capture)) { ToolTipText = capture };
+                item.Click += (_, _) => OpenRecentFile(capture);
+                open.DropDownItems.Add(item);
+            }
+        };
+        return open;
     }
 
     private MenuStrip BuildMenu()
@@ -285,6 +400,7 @@ internal sealed class MainForm : Form
         file.DropDownItems.Add(MenuItem("&Open POD...", OnOpen));
         file.DropDownItems.Add(MenuItem("&New Archive", OnNew));
         file.DropDownItems.Add(MenuItem("Open Response &List File...", OnOpenManifest));
+        _recentMenu.DropDownOpening += (_, _) => RefreshRecentMenu();
         file.DropDownItems.Add(_recentMenu);
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(MenuItem("&Add Files...", OnAddFiles));
@@ -325,7 +441,7 @@ internal sealed class MainForm : Form
 
     private StatusStrip BuildStatusBar()
     {
-        StatusStrip strip = new();
+        StatusStrip strip = _statusStrip;
         strip.Items.Add(_sizeLabel);
         strip.Items.Add(_countLabel);
         strip.Items.Add(_selectedLabel);
@@ -365,30 +481,49 @@ internal sealed class MainForm : Form
     /// drops the selection whenever the row count changes, so it is captured by
     /// entry index first and reapplied afterwards.
     /// </summary>
-    private void RefreshList()
+    /// <param name="preserveSelection">
+    /// False when the caller sets the selection itself straight afterwards, so the
+    /// rows are not re-selected once only to be replaced. Expanding a folder is the
+    /// case that matters: its heading stands for every entry under it, so preserving
+    /// that selection would re-select a thousand rows and then discard them.
+    /// </param>
+    private void RefreshList(bool preserveSelection = true)
     {
-        int[] selected = _browser.SelectedSourceIndices(_list.SelectedIndices.Cast<int>());
+        int[] selected = preserveSelection
+            ? _browser.SelectedSourceIndices(_list.SelectedIndices.Cast<int>())
+            : [];
 
         _browser.Refresh();
         _list.BeginUpdate();
-
-        // Clear before resizing: a selected index past the new end throws.
-        _list.SelectedIndices.Clear();
-        _list.VirtualListSize = _browser.Rows.Count;
-        foreach (int sourceIndex in selected)
+        _suppressSelectionEvents = true;
+        try
         {
-            int viewRow = _browser.ToViewRow(sourceIndex);
-            if (viewRow >= 0)
+            // Clear before resizing: a selected index past the new end throws.
+            _list.SelectedIndices.Clear();
+            _list.VirtualListSize = _browser.Rows.Count;
+            foreach (int sourceIndex in selected)
             {
-                _list.SelectedIndices.Add(viewRow);
+                int viewRow = _browser.ToViewRow(sourceIndex);
+                if (viewRow >= 0)
+                {
+                    _list.SelectedIndices.Add(viewRow);
+                }
             }
         }
+        finally
+        {
+            _suppressSelectionEvents = false;
+            _list.EndUpdate();
+        }
 
-        _list.EndUpdate();
         _list.Invalidate();
 
-        _countLabel.Text = "Files: " + _browser.Entries.Count;
-        _sizeLabel.Text = "Size: " + _browser.ProjectedArchiveSize.ToString("N0", CultureInfo.CurrentCulture);
+        bool empty = _browser.Entries.Count == 0;
+        _countLabel.Text = empty ? string.Empty : "Files: " + _browser.Entries.Count;
+        _sizeLabel.Text = empty
+            ? string.Empty
+            : "Size: " + _browser.ProjectedArchiveSize.ToString("N0", CultureInfo.CurrentCulture);
+        _selectionCountTimer.Stop();
         UpdateSelectedCount();
         UpdateDirtyLabel();
     }
@@ -402,7 +537,9 @@ internal sealed class MainForm : Form
     }
 
     private void UpdateSelectedCount() =>
-        _selectedLabel.Text = "Selected: " + SelectedSourceIndices().Length;
+        _selectedLabel.Text = _browser.Entries.Count == 0
+            ? string.Empty
+            : "Selected: " + SelectedSourceIndices().Length;
 
     private int[] SelectedSourceIndices() =>
         _browser.SelectedSourceIndices(_list.SelectedIndices.Cast<int>());
@@ -416,11 +553,14 @@ internal sealed class MainForm : Form
 
         if (_browser.Rows[viewRow].IsFolder)
         {
+            // The heading keeps the selection, so there is no point restoring the
+            // rows it stands for: the folder row itself is reselected below, and on a
+            // folder of a thousand files restoring them first was the whole cost of
+            // expanding it.
             _browser.ToggleFolder(viewRow);
-            RefreshList();
+            RefreshList(preserveSelection: false);
             if (viewRow < _list.VirtualListSize)
             {
-                _list.SelectedIndices.Clear();
                 _list.SelectedIndices.Add(viewRow);
             }
         }
@@ -498,7 +638,7 @@ internal sealed class MainForm : Form
 
         _browser.Clear();
         SetComment(string.Empty);
-        _openedArchive = null;
+        CloseOpenedArchive();
         _openedWithDuplicateNames = false;
         _currentArchivePath = null;
         _outputFormat = PodFormat.Pod1;
@@ -507,7 +647,7 @@ internal sealed class MainForm : Form
         _session.Reset();
         RefreshList();
         Text = Dialogs.AppName + " - New Archive";
-        _progress.Text = "Add files with Add Files..., or drag and drop, then Save As...";
+        _progress.Text = "New archive. Add files or drag them in, then use Save As.";
     }
 
     private void OnOpenManifest()
@@ -547,10 +687,11 @@ internal sealed class MainForm : Form
     {
         _session.SourceFolderPath = Path.GetDirectoryName(path);
         _session.SourceFileName = Path.GetFileName(path);
-        SetBusy(true);
+        SetBusy(true, "Opening " + Path.GetFileName(path) + "...");
         try
         {
             PodArchive archive = await Task.Run(() => PodArchiveReader.Read(path));
+            CloseOpenedArchive();
             _openedArchive = archive;
             _openedWithDuplicateNames = HasDuplicateNames(archive);
             _currentArchivePath = path;
@@ -563,20 +704,12 @@ internal sealed class MainForm : Form
             _auditEntries.Clear();
             _auditEntries.AddRange(archive.AuditEntries);
             _session.OpenArchive = archive;
-            _session.ArchiveByteSize = new FileInfo(path).Length;
+            _session.ArchiveByteSize = archive.Data.Length;
             SetComment(archive.Comment);
             _session.ArchiveComment = archive.Comment;
 
             _browser.Clear();
-            foreach (PodEntry entry in archive.Entries)
-            {
-                _browser.Entries.Add(new EditableEntry(entry.Name, archive.GetEntryBytes(entry))
-                {
-                    RawNameField = entry.RawNameField,
-                    EmbeddedPaletteName = entry.EmbeddedPaletteName,
-                    Timestamp = entry.Timestamp,
-                });
-            }
+            LoadEntriesFrom(archive);
 
             _dirty = false;
             RefreshList();
@@ -594,10 +727,65 @@ internal sealed class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// Fills the entry list from an open archive, referencing its payloads rather
+    /// than copying them. Browsing, sorting and filtering need only names and
+    /// lengths, so the bytes stay on disk until a preview, an extract or a save
+    /// actually asks for them.
+    /// </summary>
+    private void LoadEntriesFrom(PodArchive archive)
+    {
+        foreach (PodEntry entry in archive.Entries)
+        {
+            _browser.Entries.Add(new EditableEntry(
+                entry.Name, archive.Data, entry.Offset, checked((int)entry.Length))
+            {
+                RawNameField = entry.RawNameField,
+                EmbeddedPaletteName = entry.EmbeddedPaletteName,
+                Timestamp = entry.Timestamp,
+            });
+        }
+    }
+
+    /// <summary>
+    /// Releases the open archive's file handle. The entry list references that
+    /// archive's bytes, so nothing may read an entry's payload after this until the
+    /// list is rebuilt.
+    /// </summary>
+    private void CloseOpenedArchive()
+    {
+        _openedArchive?.Dispose();
+        _openedArchive = null;
+        _session.OpenArchive = null;
+    }
+
+    /// <summary>
+    /// Points the entry list at an archive on disk, dropping whatever it referenced
+    /// before. Used after a save so the editor reads from the file it just wrote
+    /// rather than the one that file replaced.
+    /// </summary>
+    private async Task RebindTo(string path)
+    {
+        PodArchive archive = await Task.Run(() => PodArchiveReader.Read(path));
+        CloseOpenedArchive();
+        _openedArchive = archive;
+        _session.OpenArchive = archive;
+        _openedWithDuplicateNames = HasDuplicateNames(archive);
+        _session.SourceFolderPath = Path.GetDirectoryName(path);
+        _session.SourceFileName = Path.GetFileName(path);
+        _session.ArchiveByteSize = archive.Data.Length;
+
+        // Only the entries are replaced: the collapse state and the selection belong
+        // to the view and should survive a save.
+        _browser.Entries.Clear();
+        LoadEntriesFrom(archive);
+        RefreshList();
+    }
+
     private async void OpenManifestPath(string manifestPath)
     {
         string sourceFolder = Path.GetDirectoryName(manifestPath) ?? ".";
-        SetBusy(true);
+        SetBusy(true, "Reading " + Path.GetFileName(manifestPath) + "...");
         try
         {
             PodManifestParser.Manifest manifest =
@@ -616,7 +804,7 @@ internal sealed class MainForm : Form
             }
 
             SetComment(manifest.VolumeName);
-            _openedArchive = null;
+            CloseOpenedArchive();
             _currentArchivePath = null;
             _outputFormat = PodFormat.Pod1;
             _auditEntries.Clear();
@@ -705,7 +893,7 @@ internal sealed class MainForm : Form
                     if (!Dialogs.Confirm(this, "Entry already exists: " + name + "\nReplace it?")) continue;
                     EditableEntry old = _browser.Entries[existingIndex];
                     _browser.Entries[existingIndex] = addedEntry;
-                    AddAudit(PodAuditAction.Change, name, old.Timestamp, (uint)old.Data.Length,
+                    AddAudit(PodAuditAction.Change, name, old.Timestamp, (uint)old.Length,
                         timestamp, (uint)data.Length);
                 }
                 else
@@ -743,7 +931,7 @@ internal sealed class MainForm : Form
         {
             EditableEntry removed = _browser.Entries[indices[i]];
             AddAudit(PodAuditAction.Remove, removed.Name, removed.Timestamp,
-                (uint)removed.Data.Length, 0, 0);
+                (uint)removed.Length, 0, 0);
             _browser.Entries.RemoveAt(indices[i]);
         }
 
@@ -787,7 +975,7 @@ internal sealed class MainForm : Form
             };
             EditableEntry replacement = _browser.Entries[index];
             AddAudit(PodAuditAction.Change, existing.Name, existing.Timestamp,
-                (uint)existing.Data.Length, replacement.Timestamp, (uint)data.Length);
+                (uint)existing.Length, replacement.Timestamp, (uint)data.Length);
             MarkDirty();
             RefreshList();
             SelectEntry(index);
@@ -836,16 +1024,23 @@ internal sealed class MainForm : Form
                 + " discards POD2 timestamps and audit history. Continue?")) return;
         if (!Dialogs.Confirm(this, "Write " + DisplayName(validation.OutputFormat) + " to:\n" + target + "?")) return;
 
-        SetBusy(true);
+        SetBusy(true, "Saving " + Path.GetFileName(target) + "...");
+        bool released = false;
         try
         {
             byte[]? commentField = _openedArchive?.IsPod1Family == true ? _openedArchive.RawCommentField : null;
             IReadOnlyList<PodAuditEntry> audits = validation.OutputFormat == PodFormat.Pod2 && _auditEnabled
                 ? _auditEntries : [];
+
+            // The blobs stream their payloads out of the archive being read, which may
+            // be the very file being written. The handle is released only once the new
+            // archive is complete beside the target and everything has been read.
+            PodArchive? reading = _openedArchive;
             PodFormat written = await Task.Run(
                 () => PodArchiveWriter.Write(target, comment, blobs,
                     new PodWriteOptions(validation.OutputFormat, commentField, audits,
-                        _openedWithDuplicateNames)));
+                        _openedWithDuplicateNames),
+                    beforeReplace: () => { released = true; reading?.Dispose(); }));
             _dirty = false;
             _currentArchivePath = target;
             _outputFormat = written;
@@ -854,6 +1049,11 @@ internal sealed class MainForm : Form
             _session.TargetFileName = Path.GetFileName(target);
             _progress.Text = "Saved: " + Path.GetFileName(target) + " (" + DisplayName(written) + ")";
             Text = Dialogs.AppName + " - " + Path.GetFileName(target);
+
+            // The entry list referenced the archive that was just replaced, and any
+            // entry added from disk still held its bytes. Rebinding to what is now on
+            // disk fixes both, and costs one directory read.
+            await RebindTo(target);
 
             if (written == PodFormat.Pod1Extended && requested == PodFormat.Pod1)
             {
@@ -867,6 +1067,20 @@ internal sealed class MainForm : Form
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OverflowException)
         {
             Dialogs.Error(this, "Save failed", ex);
+
+            // The source handle was already released, so the entries point at bytes
+            // that are no longer reachable. Leaving them on display would fail on the
+            // next preview or extract.
+            if (released)
+            {
+                _openedArchive = null;
+                _session.OpenArchive = null;
+                _browser.Clear();
+                SetComment(string.Empty);
+                _currentArchivePath = null;
+                RefreshList();
+                _progress.Text = "Save failed and the open archive was closed. Reopen it to continue.";
+            }
         }
         finally
         {
@@ -927,7 +1141,8 @@ internal sealed class MainForm : Form
             selection.Add(_browser.Entries[index]);
         }
 
-        SetBusy(true);
+        SetBusy(true, "Extracting " + selection.Count
+            + (selection.Count == 1 ? " entry..." : " entries..."));
         Progress<int> progress = new(done =>
             _progress.Text = "Extracting " + done + " of " + selection.Count + "...");
 
@@ -935,6 +1150,10 @@ internal sealed class MainForm : Form
         {
             await Task.Run(() =>
             {
+                // Streamed through one buffer rather than materialized: the entry
+                // list can mix archive-backed and disk-backed entries, and extracting
+                // a whole archive should not need the whole archive in memory.
+                byte[] scratch = PodDataSource.NewScratch();
                 for (int i = 0; i < selection.Count; i++)
                 {
                     ((IProgress<int>)progress).Report(i + 1);
@@ -947,7 +1166,9 @@ internal sealed class MainForm : Form
                         Directory.CreateDirectory(parent!);
                     }
 
-                    File.WriteAllBytes(destination, entry.Data);
+                    using FileStream target = new(destination, FileMode.Create, FileAccess.Write,
+                        FileShare.None, PodDataSource.ScratchSize);
+                    entry.CopyTo(target, scratch);
                 }
             });
             _progress.Text = "Extraction complete.";
@@ -1258,13 +1479,13 @@ internal sealed class MainForm : Form
     private void RefreshRecentMenu()
     {
         _recentMenu.DropDownItems.Clear();
-        if (_config.RecentOpenedFiles.Count == 0)
+        if (Config.RecentOpenedFiles.Count == 0)
         {
             _recentMenu.DropDownItems.Add(new ToolStripMenuItem("(none)") { Enabled = false });
             return;
         }
 
-        foreach (string path in _config.RecentOpenedFiles)
+        foreach (string path in Config.RecentOpenedFiles)
         {
             string capture = path;
             ToolStripMenuItem item = new(Path.GetFileName(capture)) { ToolTipText = capture };
@@ -1278,7 +1499,7 @@ internal sealed class MainForm : Form
         if (!File.Exists(path))
         {
             Dialogs.Warn(this, "File no longer exists:\n" + path);
-            _config = _config.WithoutRecentOpenedFile(path);
+            Config = Config.WithoutRecentOpenedFile(path);
             SaveConfigQuietly();
             RefreshRecentMenu();
             return;
@@ -1304,14 +1525,14 @@ internal sealed class MainForm : Form
         }
 
         Dialogs.Warn(this, "Recent file type is not supported anymore:\n" + path);
-        _config = _config.WithoutRecentOpenedFile(path);
+        Config = Config.WithoutRecentOpenedFile(path);
         SaveConfigQuietly();
         RefreshRecentMenu();
     }
 
     private void RememberOpenedFile(string path)
     {
-        _config = _config.WithRecentOpenedFile(path);
+        Config = Config.WithRecentOpenedFile(path);
         SaveConfigQuietly();
         RefreshRecentMenu();
     }
@@ -1320,7 +1541,7 @@ internal sealed class MainForm : Form
     {
         try
         {
-            ConfigStore.Save(_config);
+            ConfigStore.Save(Config);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -1336,7 +1557,7 @@ internal sealed class MainForm : Form
             return _session.SourceFolderPath;
         }
 
-        foreach (string recent in _config.RecentOpenedFiles)
+        foreach (string recent in Config.RecentOpenedFiles)
         {
             string? parent = Directory.Exists(recent) ? recent : Path.GetDirectoryName(recent);
             if (parent is not null && Directory.Exists(parent))
@@ -1471,18 +1692,16 @@ internal sealed class MainForm : Form
         return slash >= 0 ? name.Substring(0, slash) : string.Empty;
     }
 
+    /// <summary>
+    /// The same entry under a new name. Keeps the payload where it is, so renaming in
+    /// a large archive costs nothing beyond the name.
+    /// </summary>
     private static EditableEntry RenamedEntry(EditableEntry entry, string newName) =>
-        new(PodArchiveWriter.NormalizeName(newName), entry.Data)
-        {
-            RawNameField = entry.RawNameField,
-            EmbeddedPaletteName = entry.EmbeddedPaletteName,
-            Timestamp = entry.Timestamp,
-        };
+        entry.WithName(PodArchiveWriter.NormalizeName(newName));
 
     private bool ValidateEditedEntries(IReadOnlyList<EditableEntry> entries)
     {
-        IReadOnlyList<PodBlob> blobs = entries.Select(e => new PodBlob(e.Name, e.Data,
-            e.RawNameField, e.EmbeddedPaletteName, e.Timestamp)).ToArray();
+        IReadOnlyList<PodBlob> blobs = entries.Select(e => e.ToBlob()).ToArray();
         PodValidationResult validation = PodArchiveValidator.ValidateForSave(_comment.Text, blobs, _outputFormat);
         if (!validation.IsValid) ShowValidation(validation);
         return validation.IsValid;
@@ -1490,8 +1709,8 @@ internal sealed class MainForm : Form
 
     private void AddMoveAudit(string oldName, string newName, EditableEntry entry)
     {
-        AddAudit(PodAuditAction.Remove, oldName, entry.Timestamp, (uint)entry.Data.Length, 0, 0);
-        AddAudit(PodAuditAction.Add, newName, 0, 0, entry.Timestamp, (uint)entry.Data.Length);
+        AddAudit(PodAuditAction.Remove, oldName, entry.Timestamp, (uint)entry.Length, 0, 0);
+        AddAudit(PodAuditAction.Add, newName, 0, 0, entry.Timestamp, (uint)entry.Length);
     }
 
     private void AddAudit(PodAuditAction action, string path, uint oldTimestamp, uint oldSize,
@@ -1512,10 +1731,44 @@ internal sealed class MainForm : Form
         _suppressCommentEvents = false;
     }
 
-    private void SetBusy(bool busy)
+    /// <summary>
+    /// Runs a synchronous view change with the activity light on, so a rebuild of the
+    /// whole row list says what it is doing rather than looking like a freeze.
+    /// </summary>
+    private void WithBusy(string message, Action action)
+    {
+        SetBusy(true, message);
+        try
+        {
+            action();
+            RefreshList();
+        }
+        finally
+        {
+            SetBusy(false, string.Empty);
+        }
+    }
+
+    /// <summary>
+    /// Turns the activity light red, shows the wait cursor, and says what is running.
+    /// </summary>
+    /// <param name="message">
+    /// What to show in the status bar while busy. Null leaves whatever is there,
+    /// which is what the finishing call wants so its result is not overwritten.
+    /// </param>
+    private void SetBusy(bool busy, string? message = null)
     {
         _activity.BackColor = busy ? Color.FromArgb(0xFF, 0x00, 0x00) : Color.FromArgb(0x00, 0xCC, 0x00);
+        _activity.ToolTipText = busy ? "Working" : "Idle";
         UseWaitCursor = busy;
+        if (message is not null)
+        {
+            _progress.Text = message;
+        }
+
+        // Without this the status bar only repaints once the operation lets go of the
+        // UI thread, which is exactly when the message stops being useful.
+        _statusStrip.Refresh();
     }
 
     private void MarkDirty()
@@ -1539,6 +1792,9 @@ internal sealed class MainForm : Form
             return;
         }
 
+        // The open archive holds a file handle for as long as it lives.
+        CloseOpenedArchive();
+        _selectionCountTimer.Dispose();
         base.OnFormClosing(e);
     }
 
@@ -1561,11 +1817,80 @@ internal sealed class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
         };
 
-    private static ToolStripButton ToolButton(string text, Action action)
+    /// <summary>A toolbar button showing its icon and its label.</summary>
+    private static ToolStripButton LabelledButton(string text, string tooltip, string glyph,
+        int side, Action action)
     {
-        ToolStripButton button = new(text) { DisplayStyle = ToolStripItemDisplayStyle.Text };
+        ToolStripButton button = new(text)
+        {
+            DisplayStyle = ToolStripItemDisplayStyle.ImageAndText,
+            AutoToolTip = false,
+            ToolTipText = tooltip,
+        };
+        ApplyIcon(button, glyph, side);
         button.Click += (_, _) => action();
         return button;
+    }
+
+    /// <summary>
+    /// A toolbar button showing only its icon. The text is still set, because that is
+    /// what screen readers announce, and it is what the button falls back to when the
+    /// icon font is missing.
+    /// </summary>
+    private static ToolStripButton IconButton(string text, string tooltip, string glyph,
+        int side, Action action)
+    {
+        ToolStripButton button = new(text)
+        {
+            DisplayStyle = ToolStripItemDisplayStyle.Image,
+            AutoToolTip = false,
+            ToolTipText = tooltip,
+        };
+        ApplyIcon(button, glyph, side);
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    /// <summary>
+    /// A toolbar button whose face runs <paramref name="defaultAction"/> and whose
+    /// arrow opens the rest.
+    /// </summary>
+    private static ToolStripSplitButton SplitButton(string text, string tooltip, string glyph,
+        int side, Action defaultAction, params (string Text, Action Action)[] entries)
+    {
+        ToolStripSplitButton button = new(text)
+        {
+            DisplayStyle = ToolStripItemDisplayStyle.ImageAndText,
+            AutoToolTip = false,
+            ToolTipText = tooltip,
+        };
+        ApplyIcon(button, glyph, side);
+        button.ButtonClick += (_, _) => defaultAction();
+        foreach ((string entryText, Action entryAction) in entries)
+        {
+            button.DropDownItems.Add(MenuItem(entryText, entryAction));
+        }
+
+        return button;
+    }
+
+    /// <summary>
+    /// Gives an item its glyph, or leaves it as a text button when Segoe MDL2 Assets
+    /// is not installed, which is the Windows 7 and 8.1 case.
+    /// </summary>
+    private static void ApplyIcon(ToolStripItem item, string glyph, int side)
+    {
+        Bitmap? icon = ToolbarIcons.Render(glyph, side);
+        if (icon is null)
+        {
+            item.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            return;
+        }
+
+        // The ToolStrip does not own item images, but these live for as long as the
+        // window does and there are a dozen of them at 16px, so they are left to the
+        // finalizer rather than tracked.
+        item.Image = icon;
     }
 
     private static ToolStripMenuItem MenuItem(string text, Action action)

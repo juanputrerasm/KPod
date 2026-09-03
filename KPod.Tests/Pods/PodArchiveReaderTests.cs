@@ -13,7 +13,7 @@ public class PodArchiveReaderTests
             PodFile.Text("WORLD/LAGUNA.SIT", "!Race Track Name\nLaguna Seca\n"),
             PodFile.Text("TRUCK/BIGFOOT.TRK", "truckName\nBigfoot 15\n")));
 
-        PodArchive archive = PodArchiveReader.Read(path);
+        using PodArchive archive = PodArchiveReader.Read(path);
 
         Assert.Equal(PodFormat.Pod1, archive.Format);
         Assert.Equal(["WORLD/LAGUNA.SIT", "TRUCK/BIGFOOT.TRK"], archive.Entries.Select(e => e.Name));
@@ -30,7 +30,7 @@ public class PodArchiveReaderTests
             PodFile.Text("WORLD/AZTEC.SIT", "aztec"),
             PodFile.Text("TRUCK/SNAKE.TRK", "snake")));
 
-        PodArchive archive = PodArchiveReader.Read(path);
+        using PodArchive archive = PodArchiveReader.Read(path);
 
         Assert.Equal(PodFormat.Pod2, archive.Format);
         Assert.Equal("POD2", archive.FormatDisplayName);
@@ -48,7 +48,7 @@ public class PodArchiveReaderTests
             "art.epd",
             PodFixture.BuildEpd(("ART", @"\TRUCK.BMP", PodText.Latin1.GetBytes("bmp"))));
 
-        PodArchive archive = PodArchiveReader.Read(path);
+        using PodArchive archive = PodArchiveReader.Read(path);
 
         Assert.Equal(PodFormat.Epd, archive.Format);
         Assert.Equal(@"ART\TRUCK.BMP", archive.Entries[0].Name);
@@ -62,7 +62,8 @@ public class PodArchiveReaderTests
             "art.epd",
             PodFixture.BuildEpd(("art", @"\TRUCK.BMP", PodText.Latin1.GetBytes("bmp"))));
 
-        Assert.Equal(@"\TRUCK.BMP", PodArchiveReader.Read(path).Entries[0].Name);
+        using PodArchive archive = PodArchiveReader.Read(path);
+        Assert.Equal(@"\TRUCK.BMP", archive.Entries[0].Name);
     }
 
     [Fact]
@@ -93,7 +94,7 @@ public class PodArchiveReaderTests
             PodFile.Text(@"ART\DEMO1.RAW", "raw"),
             PodFile.Text(@"ART\DEMO1.ACT", "act")));
 
-        PodArchive archive = PodArchiveReader.Read(path);
+        using PodArchive archive = PodArchiveReader.Read(path);
 
         Assert.NotNull(archive.FindEntry(@"art\demo1.raw"));
         Assert.NotNull(archive.FindEntryByTitle("DEMO1.ACT"));

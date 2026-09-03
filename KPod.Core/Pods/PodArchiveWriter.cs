@@ -2,7 +2,16 @@ using KPod.Core.Compat;
 
 namespace KPod.Core.Pods;
 
-/// <summary>Strict POD1/POD1-64 and isolated POD2 archive writer.</summary>
+/// <summary>
+/// Strict POD1/POD1-64 and isolated POD2 archive writer.
+///
+/// <para>Archives are written straight to the output stream, one payload at a time
+/// through a shared transfer buffer, so building a 200 MB archive costs the directory
+/// plus that buffer rather than the archive twice over. <see cref="Write(string, string?,
+/// IReadOnlyList{PodBlob}, PodWriteOptions)"/> builds beside the target and replaces
+/// it, which keeps a failed write from destroying the original and makes it safe to
+/// save over an archive that is currently open for reading.</para>
+/// </summary>
 public static class PodArchiveWriter
 {
     private const int CommentSize = 80;
@@ -10,22 +19,79 @@ public static class PodArchiveWriter
     private const int LongNameSize = 64;
     private const int Pod2HeaderSize = 96;
     private const int Pod2EntrySize = 20;
+    private const int Pod2AuditSize = 312;
     private const int MaxItems = PodArchiveReader.MaxReasonableItems;
     public const int MaxNameLength = LongNameSize - 1;
+
+    /// <summary>Suffix of the temporary file a write builds before replacing the target.</summary>
+    private const string TempSuffix = ".kpodtmp";
 
     public static PodFormat Write(string path, string? comment, IReadOnlyList<PodBlob> blobs,
         byte[]? rawCommentField = null) =>
         Write(path, comment, blobs, new PodWriteOptions(PodFormat.Pod1, rawCommentField, []));
 
+    /// <param name="beforeReplace">
+    /// Runs once the new archive is complete on disk and before it takes the target's
+    /// place. A caller that is reading from the target, which is what saving over the
+    /// archive you have open means, releases its handle here: the payloads have all
+    /// been streamed out by then, and the swap needs the target free.
+    /// </param>
     public static PodFormat Write(string path, string? comment, IReadOnlyList<PodBlob> blobs,
-        PodWriteOptions options)
+        PodWriteOptions options, Action? beforeReplace = null)
     {
+        ValidateInputs(comment, blobs, options.AllowDuplicateNames);
         PodFormat actual = ActualFormat(blobs, options.Format);
-        byte[] bytes = BuildBytes(comment, blobs, options);
         string? parent = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent!);
-        File.WriteAllBytes(path, bytes);
+
+        // Build beside the target and swap. Until the swap the target is untouched,
+        // so a source archive being read from can also be the destination.
+        string temp = path + TempSuffix;
+        try
+        {
+            using (FileStream output = new(temp, FileMode.Create, FileAccess.ReadWrite,
+                FileShare.None, PodDataSource.ScratchSize))
+            {
+                if (actual == PodFormat.Pod2)
+                    WritePod2(output, comment, blobs, options.AuditEntries);
+                else
+                    WritePod1(output, comment, blobs, options.RawCommentField, actual);
+            }
+            beforeReplace?.Invoke();
+            Replace(temp, path);
+        }
+        finally
+        {
+            DeleteQuietly(temp);
+        }
+
         return actual;
+    }
+
+    /// <summary>Swaps the finished temporary file onto the target path.</summary>
+    private static void Replace(string temp, string path)
+    {
+        if (File.Exists(path))
+        {
+            // Keeps the destination's identity and attributes, and needs only the
+            // delete access that FilePodDataSource's share mode already permits.
+            File.Replace(temp, path, null);
+            return;
+        }
+
+        File.Move(temp, path);
+    }
+
+    private static void DeleteQuietly(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A leftover temp file is not worth failing a completed save over.
+        }
     }
 
     public static PodFormat FormatFor(IReadOnlyList<PodBlob> blobs) =>
@@ -37,26 +103,119 @@ public static class PodArchiveWriter
         if (requested is not (PodFormat.Pod1 or PodFormat.Pod1Extended))
             throw new ArgumentException("Unsupported output format: " + requested, nameof(requested));
         if (requested == PodFormat.Pod1Extended) return requested;
-        return blobs.Any(blob => RequiredNameFieldLength(blob) > EntryNameSize)
-            ? PodFormat.Pod1Extended : PodFormat.Pod1;
+        foreach (PodBlob blob in blobs)
+        {
+            if (RequiredNameFieldLength(blob) > EntryNameSize) return PodFormat.Pod1Extended;
+        }
+
+        return PodFormat.Pod1;
+    }
+
+    /// <summary>Width of a classic POD1 directory name field.</summary>
+    public const int ClassicNameFieldSize = EntryNameSize;
+
+    /// <summary>Width of a POD1-64 directory name field.</summary>
+    public const int LongNameFieldSize = LongNameSize;
+
+    /// <summary>
+    /// Bytes a directory name field must hold for this name and palette name,
+    /// terminators included. Exposed so callers can decide the output format without
+    /// building a <see cref="PodBlob"/> per entry: the browser asks that on every
+    /// list refresh, which is every filter keystroke.
+    /// </summary>
+    public static int RequiredNameFieldBytes(string name, string? embeddedPaletteName) =>
+        RequiredNameFieldLength(name, embeddedPaletteName);
+
+    /// <summary>
+    /// Every check a write performs, without producing the archive.
+    ///
+    /// <para>Pre-save validation used to call <see cref="BuildBytes(string?,
+    /// IReadOnlyList{PodBlob}, PodWriteOptions)"/> and throw the result away, which
+    /// meant renaming one entry serialized the whole archive. Nothing it was catching
+    /// needs the payloads: the directory constraints come from the names, and the
+    /// overflow checks come from the lengths.</para>
+    /// </summary>
+    public static void ValidateLayout(string? comment, IReadOnlyList<PodBlob> blobs,
+        PodWriteOptions options)
+    {
+        ValidateInputs(comment, blobs, options.AllowDuplicateNames);
+        PodFormat actual = ActualFormat(blobs, options.Format);
+        if (actual == PodFormat.Pod2)
+        {
+            Pod2Layout(comment, blobs, options.AuditEntries);
+        }
+        else
+        {
+            Pod1Layout(blobs, actual);
+        }
     }
 
     public static byte[] BuildBytes(string? comment, IReadOnlyList<PodBlob> blobs,
         byte[]? rawCommentField = null) =>
         BuildBytes(comment, blobs, new PodWriteOptions(PodFormat.Pod1, rawCommentField, []));
 
+    /// <summary>
+    /// The archive as one array. Kept for fixtures and in-memory callers;
+    /// <see cref="Write(string, string?, IReadOnlyList{PodBlob}, PodWriteOptions)"/>
+    /// streams instead and does not go through here.
+    /// </summary>
     public static byte[] BuildBytes(string? comment, IReadOnlyList<PodBlob> blobs,
         PodWriteOptions options)
     {
         ValidateInputs(comment, blobs, options.AllowDuplicateNames);
         PodFormat actual = ActualFormat(blobs, options.Format);
-        return actual == PodFormat.Pod2
-            ? BuildPod2(comment, blobs, options.AuditEntries)
-            : BuildPod1(comment, blobs, options.RawCommentField, actual);
+
+        // The size is known exactly before a byte is written, so presize and skip the
+        // doubling reallocations a growing MemoryStream would do.
+        using MemoryStream output = new(ExactSize(comment, blobs, options, actual));
+        if (actual == PodFormat.Pod2)
+            WritePod2(output, comment, blobs, options.AuditEntries);
+        else
+            WritePod1(output, comment, blobs, options.RawCommentField, actual);
+        return output.ToArray();
     }
 
-    private static byte[] BuildPod1(string? comment, IReadOnlyList<PodBlob> blobs,
-        byte[]? rawCommentField, PodFormat actual)
+    private static int ExactSize(string? comment, IReadOnlyList<PodBlob> blobs,
+        PodWriteOptions options, PodFormat actual)
+    {
+        if (actual == PodFormat.Pod2)
+        {
+            Pod2Plan plan = Pod2Layout(comment, blobs, options.AuditEntries);
+            return checked(plan.DataStart + TotalPayload(blobs)
+                + (options.AuditEntries.Count * Pod2AuditSize));
+        }
+
+        Pod1Plan pod1 = Pod1Layout(blobs, actual);
+        return checked(pod1.HeaderSize + TotalPayload(blobs));
+    }
+
+    private static int TotalPayload(IReadOnlyList<PodBlob> blobs)
+    {
+        int total = 0;
+        foreach (PodBlob blob in blobs) total = checked(total + blob.Length);
+        return total;
+    }
+
+    // -------------------------------------------------------------------------
+    // Layout: everything that can be decided from names and lengths alone
+    // -------------------------------------------------------------------------
+
+    private readonly struct Pod1Plan(int nameSize, int headerSize, int[] offsets)
+    {
+        public int NameSize { get; } = nameSize;
+        public int HeaderSize { get; } = headerSize;
+        public int[] Offsets { get; } = offsets;
+    }
+
+    private readonly struct Pod2Plan(byte[] names, int[] nameOffsets, int dataStart, int[] offsets)
+    {
+        public byte[] Names { get; } = names;
+        public int[] NameOffsets { get; } = nameOffsets;
+        public int DataStart { get; } = dataStart;
+        public int[] Offsets { get; } = offsets;
+    }
+
+    private static Pod1Plan Pod1Layout(IReadOnlyList<PodBlob> blobs, PodFormat actual)
     {
         int nameSize = actual == PodFormat.Pod1Extended ? LongNameSize : EntryNameSize;
         foreach (PodBlob blob in blobs)
@@ -66,25 +225,21 @@ public static class PodArchiveWriter
                     $"POD entry name/palette exceeds {nameSize - 1} usable bytes: {blob.Name}");
         }
         int headerSize = checked(sizeof(int) + CommentSize + (blobs.Count * (nameSize + 8)));
-        int[] offsets = OffsetsFor(blobs, headerSize);
-        using MemoryStream output = new();
-        WriteInt32(output, blobs.Count);
-        WriteCommentField(output, comment, rawCommentField);
-        for (int i = 0; i < blobs.Count; i++)
-        {
-            WriteNameField(output, blobs[i], nameSize);
-            WriteInt32(output, blobs[i].Data.Length);
-            WriteInt32(output, offsets[i]);
-        }
-        foreach (PodBlob blob in blobs) Write(output, blob.Data);
-        return output.ToArray();
+        return new Pod1Plan(nameSize, headerSize, OffsetsFor(blobs, headerSize));
     }
 
-    private static byte[] BuildPod2(string? comment, IReadOnlyList<PodBlob> blobs,
+    private static Pod2Plan Pod2Layout(string? comment, IReadOnlyList<PodBlob> blobs,
         IReadOnlyList<PodAuditEntry> audits)
     {
         if (audits.Count > MaxItems)
             throw new PodFormatException("Too many POD2 audit records: " + audits.Count);
+        CheckFixedField(comment, CommentSize, "POD2 comment");
+        foreach (PodAuditEntry audit in audits)
+        {
+            CheckFixedField(audit.User, 32, "Audit user");
+            CheckFixedField(audit.EntryPath, 256, "Audit entry path");
+        }
+
         using MemoryStream names = new();
         int[] nameOffsets = new int[blobs.Count];
         for (int i = 0; i < blobs.Count; i++)
@@ -93,28 +248,64 @@ public static class PodArchiveWriter
             Write(names, PodText.Latin1.GetBytes(blobs[i].Name));
             names.WriteByte(0);
         }
-        int dataStart = checked(Pod2HeaderSize + (blobs.Count * Pod2EntrySize) + (int)names.Length);
-        int[] offsets = OffsetsFor(blobs, dataStart);
-        using MemoryStream output = new();
-        Write(output, [(byte)'P', (byte)'O', (byte)'D', (byte)'2']);
-        WriteInt32(output, 0);
-        WriteFixedStrict(output, comment, CommentSize, "POD2 comment");
+
+        byte[] nameBlob = names.ToArray();
+        int dataStart = checked(Pod2HeaderSize + (blobs.Count * Pod2EntrySize) + nameBlob.Length);
+        return new Pod2Plan(nameBlob, nameOffsets, dataStart, OffsetsFor(blobs, dataStart));
+    }
+
+    // -------------------------------------------------------------------------
+    // Writing
+    // -------------------------------------------------------------------------
+
+    private static void WritePod1(Stream output, string? comment, IReadOnlyList<PodBlob> blobs,
+        byte[]? rawCommentField, PodFormat actual)
+    {
+        Pod1Plan plan = Pod1Layout(blobs, actual);
         WriteInt32(output, blobs.Count);
-        WriteInt32(output, audits.Count);
+        WriteCommentField(output, comment, rawCommentField);
         for (int i = 0; i < blobs.Count; i++)
         {
-            WriteInt32(output, nameOffsets[i]);
-            WriteInt32(output, blobs[i].Data.Length);
-            WriteInt32(output, offsets[i]);
-            WriteInt32(output, unchecked((int)blobs[i].Timestamp));
-            WriteInt32(output, unchecked((int)Crc32Mpeg2(blobs[i].Data)));
+            WriteNameField(output, blobs[i], plan.NameSize);
+            WriteInt32(output, blobs[i].Length);
+            WriteInt32(output, plan.Offsets[i]);
         }
-        Write(output, names.ToArray());
-        foreach (PodBlob blob in blobs) Write(output, blob.Data);
-        foreach (PodAuditEntry audit in audits) WriteAudit(output, audit);
-        byte[] result = output.ToArray();
-        WriteInt32At(result, 4, unchecked((int)Crc32Mpeg2(result, 8, result.Length - 8)));
-        return result;
+
+        byte[] scratch = PodDataSource.NewScratch();
+        foreach (PodBlob blob in blobs) blob.CopyTo(output, scratch);
+    }
+
+    private static void WritePod2(Stream output, string? comment, IReadOnlyList<PodBlob> blobs,
+        IReadOnlyList<PodAuditEntry> audits)
+    {
+        Pod2Plan plan = Pod2Layout(comment, blobs, audits);
+        byte[] scratch = PodDataSource.NewScratch();
+        long start = output.Position;
+
+        // The archive checksum covers everything after it, so accumulate it as the
+        // bytes go past rather than reading the finished archive back.
+        Write(output, [(byte)'P', (byte)'O', (byte)'D', (byte)'2']);
+        WriteInt32(output, 0);
+        Crc32Stream hashed = new(output);
+        WriteFixedStrict(hashed, comment, CommentSize, "POD2 comment");
+        WriteInt32(hashed, blobs.Count);
+        WriteInt32(hashed, audits.Count);
+        for (int i = 0; i < blobs.Count; i++)
+        {
+            WriteInt32(hashed, plan.NameOffsets[i]);
+            WriteInt32(hashed, blobs[i].Length);
+            WriteInt32(hashed, plan.Offsets[i]);
+            WriteInt32(hashed, unchecked((int)blobs[i].Timestamp));
+            WriteInt32(hashed, unchecked((int)blobs[i].Crc32Mpeg2(scratch)));
+        }
+        Write(hashed, plan.Names);
+        foreach (PodBlob blob in blobs) blob.CopyTo(hashed, scratch);
+        foreach (PodAuditEntry audit in audits) WriteAudit(hashed, audit);
+
+        long end = output.Position;
+        output.Seek(start + 4, SeekOrigin.Begin);
+        WriteInt32(output, unchecked((int)hashed.Value));
+        output.Seek(end, SeekOrigin.Begin);
     }
 
     /// <summary>
@@ -166,7 +357,7 @@ public static class PodArchiveWriter
         for (int i = 0; i < blobs.Count; i++)
         {
             offsets[i] = cursor;
-            cursor = checked(cursor + blobs[i].Data.Length);
+            cursor = checked(cursor + blobs[i].Length);
         }
         return offsets;
     }
@@ -208,12 +399,21 @@ public static class PodArchiveWriter
     }
 
     private static int RequiredNameFieldLength(PodBlob blob) =>
-        NameByteLength(blob.Name) + 1 +
-        (string.IsNullOrWhiteSpace(blob.EmbeddedPaletteName)
-            ? 0 : NameByteLength(blob.EmbeddedPaletteName) + 1);
+        RequiredNameFieldLength(blob.Name, blob.EmbeddedPaletteName);
+
+    private static int RequiredNameFieldLength(string name, string? embeddedPaletteName) =>
+        NameByteLength(name) + 1 +
+        (string.IsNullOrWhiteSpace(embeddedPaletteName)
+            ? 0 : NameByteLength(embeddedPaletteName) + 1);
 
     private static int NameByteLength(string? value) =>
         value is null ? 0 : PodText.Latin1.GetByteCount(value);
+
+    private static void CheckFixedField(string? value, int size, string label)
+    {
+        if (NameByteLength(value) > size - 1)
+            throw new PodFormatException($"{label} exceeds {size - 1} bytes");
+    }
 
     private static void WriteFixedStrict(Stream target, string? value, int size, string label)
     {
@@ -235,23 +435,126 @@ public static class PodArchiveWriter
         WriteInt32(target, unchecked((int)audit.NewSize));
     }
 
+    // -------------------------------------------------------------------------
+    // CRC-32/MPEG-2
+    // -------------------------------------------------------------------------
+
+    /// <summary>Initial value of a POD2 checksum, and the seed to start one with.</summary>
+    public const uint Crc32Seed = 0xffffffff;
+
+    /// <summary>
+    /// One entry per leading byte value, so a byte costs a table lookup and a shift
+    /// instead of eight shift-and-branch steps.
+    /// </summary>
+    private static readonly uint[] Crc32Table = BuildCrc32Table();
+
+    private static uint[] BuildCrc32Table()
+    {
+        uint[] table = new uint[256];
+        for (int value = 0; value < 256; value++)
+        {
+            uint crc = (uint)value << 24;
+            for (int bit = 0; bit < 8; bit++)
+            {
+                crc = (crc << 1) ^ ((crc & 0x80000000) != 0 ? 0x04C11DB7u : 0);
+            }
+
+            table[value] = crc;
+        }
+
+        return table;
+    }
+
     /// <summary>
     /// The POD2 checksum: CRC-32/MPEG-2, i.e. polynomial 0x04C11DB7, initial
     /// 0xffffffff, MSB-first, and no final XOR. Check value for "123456789" is
     /// 0x0376E6E7. Not CRC-32/CCITT, despite what the shape of it suggests.
+    ///
+    /// <para>Note for anyone tempted to swap in a library: <c>System.IO.Hashing.Crc32</c>
+    /// is the reflected IEEE polynomial, which is a different checksum and would
+    /// silently invalidate every POD2 archive KPod writes.</para>
     /// </summary>
     public static uint Crc32Mpeg2(byte[] bytes) => Crc32Mpeg2(bytes, 0, bytes.Length);
 
-    public static uint Crc32Mpeg2(byte[] bytes, int offset, int length)
+    public static uint Crc32Mpeg2(byte[] bytes, int offset, int length) =>
+        Crc32Mpeg2(bytes, offset, length, Crc32Seed);
+
+    /// <summary>
+    /// Continues a running checksum, so a whole-archive CRC can be accumulated while
+    /// the archive is written rather than in a second pass over it.
+    /// </summary>
+    public static uint Crc32Mpeg2(byte[] bytes, int offset, int length, uint seed)
     {
-        uint crc = 0xffffffff;
-        for (int i = offset; i < offset + length; i++)
+        uint crc = seed;
+        int end = offset + length;
+        for (int i = offset; i < end; i++)
         {
-            crc ^= (uint)bytes[i] << 24;
-            for (int bit = 0; bit < 8; bit++)
-                crc = (crc << 1) ^ ((crc & 0x80000000) != 0 ? 0x04C11DB7u : 0);
+            crc = (crc << 8) ^ Crc32Table[((crc >> 24) ^ bytes[i]) & 0xff];
         }
+
         return crc;
+    }
+
+    /// <summary>Checksums a range of a data source without holding it in memory.</summary>
+    public static uint Crc32Mpeg2(IPodDataSource source, long offset, long count,
+        uint seed = Crc32Seed)
+    {
+        byte[] scratch = PodDataSource.NewScratch();
+        uint crc = seed;
+        long remaining = count;
+        long at = offset;
+        while (remaining > 0)
+        {
+            int want = (int)Math.Min(scratch.Length, remaining);
+            int read = source.Read(at, scratch, 0, want);
+            if (read <= 0) break;
+            crc = Crc32Mpeg2(scratch, 0, read, crc);
+            at += read;
+            remaining -= read;
+        }
+
+        return crc;
+    }
+
+    /// <summary>
+    /// Passes writes straight through while folding them into a running checksum, so
+    /// the POD2 archive CRC costs nothing beyond the write that was happening anyway.
+    /// </summary>
+    private sealed class Crc32Stream(Stream inner) : Stream
+    {
+        public uint Value { get; private set; } = Crc32Seed;
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Value = Crc32Mpeg2(buffer, offset, count, Value);
+            inner.Write(buffer, offset, count);
+        }
+
+        public override void WriteByte(byte value)
+        {
+            Value = (Value << 8) ^ Crc32Table[((Value >> 24) ^ value) & 0xff];
+            inner.WriteByte(value);
+        }
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => inner.Length;
+        public override void Flush() => inner.Flush();
+
+        public override long Position
+        {
+            get => inner.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
 
     private static void Write(Stream target, byte[] bytes) => target.Write(bytes, 0, bytes.Length);
@@ -260,30 +563,97 @@ public static class PodArchiveWriter
         target.WriteByte((byte)value); target.WriteByte((byte)(value >> 8));
         target.WriteByte((byte)(value >> 16)); target.WriteByte((byte)(value >> 24));
     }
-    private static void WriteInt32At(byte[] bytes, int at, int value)
-    {
-        bytes[at] = (byte)value; bytes[at + 1] = (byte)(value >> 8);
-        bytes[at + 2] = (byte)(value >> 16); bytes[at + 3] = (byte)(value >> 24);
-    }
 }
 
+/// <summary>
+/// One entry handed to the writer: a name plus the bytes to store under it.
+///
+/// <para>The bytes are either held directly, for an entry added from disk or built in
+/// memory, or referenced in an <see cref="IPodDataSource"/>, for an entry that came
+/// from an archive and has never needed materializing. <see cref="Length"/> is always
+/// known either way, which is what lets the writer plan the whole layout before
+/// touching a payload.</para>
+/// </summary>
 public sealed record PodBlob
 {
+    private readonly byte[]? _data;
+    private readonly IPodDataSource? _source;
+    private readonly long _offset;
+
     public PodBlob(string name, byte[] data, byte[]? rawNameField = null,
         string? embeddedPaletteName = null, uint? timestamp = null)
+        : this(name, rawNameField, embeddedPaletteName, timestamp)
+    {
+        _data = data ?? throw new ArgumentNullException(nameof(data));
+        Length = data.Length;
+    }
+
+    /// <summary>A blob that reads its payload from an archive only when asked.</summary>
+    public PodBlob(string name, IPodDataSource source, long offset, int length,
+        byte[]? rawNameField = null, string? embeddedPaletteName = null, uint? timestamp = null)
+        : this(name, rawNameField, embeddedPaletteName, timestamp)
+    {
+        _source = source ?? throw new ArgumentNullException(nameof(source));
+        _offset = offset;
+        Length = length;
+    }
+
+    private PodBlob(string name, byte[]? rawNameField, string? embeddedPaletteName, uint? timestamp)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("POD entry name is required.", nameof(name));
         Name = PodArchiveWriter.NormalizeName(name);
-        Data = data ?? throw new ArgumentNullException(nameof(data));
         RawNameField = rawNameField;
         EmbeddedPaletteName = embeddedPaletteName ?? PodNameField.SecondString(rawNameField);
         Timestamp = timestamp ?? unchecked((uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds());
     }
+
     public string Name { get; }
-    public byte[] Data { get; }
+
+    /// <summary>Payload size, known without reading the payload.</summary>
+    public int Length { get; }
+
+    /// <summary>
+    /// The payload as one array, read from the source if it is not already held.
+    /// Prefer <see cref="CopyTo"/> where the bytes are only being written onward.
+    /// </summary>
+    public byte[] Data => _data ?? _source!.ReadExact(_offset, Length);
+
     public byte[]? RawNameField { get; }
     public string? EmbeddedPaletteName { get; }
     public uint Timestamp { get; }
+
+    /// <summary>Writes the payload to a stream without holding it in memory.</summary>
+    public void CopyTo(Stream target, byte[] scratch)
+    {
+        if (_data is not null)
+        {
+            target.Write(_data, 0, _data.Length);
+            return;
+        }
+
+        _source!.CopyTo(_offset, Length, target, scratch);
+    }
+
+    /// <summary>The payload's CRC-32/MPEG-2, streamed when the payload is not held.</summary>
+    public uint Crc32Mpeg2(byte[] scratch)
+    {
+        if (_data is not null) return PodArchiveWriter.Crc32Mpeg2(_data);
+
+        uint crc = PodArchiveWriter.Crc32Seed;
+        long remaining = Length;
+        long at = _offset;
+        while (remaining > 0)
+        {
+            int want = (int)Math.Min(scratch.Length, remaining);
+            int read = _source!.Read(at, scratch, 0, want);
+            if (read <= 0) break;
+            crc = PodArchiveWriter.Crc32Mpeg2(scratch, 0, read, crc);
+            at += read;
+            remaining -= read;
+        }
+
+        return crc;
+    }
 }
 
 /// <param name="AllowDuplicateNames">

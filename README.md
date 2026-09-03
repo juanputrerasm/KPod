@@ -53,6 +53,8 @@ There is no POD3+ authoring.
 - The 80-character archive comment is editable below the toolbar.
 - The 10 most recently opened files are remembered in
   `%APPDATA%\KPod\config.json`.
+- Preferences are read the first time something needs them rather than at launch, so
+  starting up costs no disk read at all.
 
 ### Extraction
 - **Extract All** writes every entry to a folder, recreating the archive's
@@ -126,6 +128,47 @@ recommended limit, warns when the list is already that long, and still mounts th
 POD rather than blocking. It searches the archive's folder and its parent, and
 refuses to mount the same POD twice.
 
+### Startup
+The .NET Framework build turns on **multicore JIT** at launch. The first run records
+which methods starting up actually compiles, into
+`%LOCALAPPDATA%\KPod\startup.profile`; later runs replay that list on a background
+thread so the JIT works ahead of the code rather than being asked for one method at a
+time. It is best effort, so a machine that will not let the profile be written simply
+starts the way it did before. Deleting the file costs one slower start and nothing
+else.
+
+This is the Framework build's substitute for the ReadyToRun precompilation the .NET
+build gets at publish time. NGen would do more, but it needs an installer, and KPod is
+meant to be copied rather than installed.
+
+### Performance
+Opening an archive reads its directory, not its contents. A POD directory is a few
+kilobytes even when the archive is hundreds of megabytes, so entry payloads stay on
+disk until a preview, an extract or a save actually asks for one. The practical
+effect is that archive size barely affects how long an archive takes to open, or how
+much memory holding it open costs.
+
+Measured on the .NET 10 build, opening these archives and then browsing, sorting and
+filtering all 4341 entries of Hellbender's `GAME.POD`:
+
+| Archive | Size | Entries | Open | Held after open |
+|---|---:|---:|---:|---:|
+| `UI.pod` (Community Patch 2) | 192 MB | 462 | 2.2 ms | 130 KB |
+| `GAME.POD` (MTM1) | 51 MB | 2789 | 1.0 ms | 709 KB |
+| `GAME.POD` (Hellbender) | 41 MB | 4341 | 1.3 ms | 1.1 MB |
+| `FURYSE.POD` (Fury3) | 31 MB | 1330 | 0.5 ms | 346 KB |
+
+On Hellbender's `GAME.POD`, expanding every folder takes 2.5 ms, sorting the whole
+list by description 3.0 ms, four filter keystrokes 5.2 ms, and selecting a 3420-entry
+folder and mapping the selection back to rows 2.6 ms.
+
+Saving streams too. The writer plans the directory from names and lengths, then
+copies each payload through a single 64 KB buffer into a temporary file beside the
+target and swaps it in, so peak memory for a save is the directory plus that buffer
+regardless of archive size. Rewriting the 192 MB `UI.pod` in place takes 120 ms, and
+because the new archive is complete on disk before it replaces the old one, a failed
+save cannot damage the original.
+
 ---
 
 ## POD1-64 (Extended POD1)
@@ -197,15 +240,28 @@ build, which is published alongside it.
 
 ### Toolbar
 
-| Control | Action |
-|---|---|
-| **Open...** | Open a POD or EPD archive |
-| **Save As...** | Write the current entry list to a new `.pod` |
-| **Expand +** / **Collapse -** | Open or close every folder |
-| **Add Files...** | Append files from disk |
-| **Extract Sel.** / **Extract All** | Extract the selection, or everything |
-| **Remove** | Drop the selected entries from the list |
-| **Search** | Open the search dialog |
+Actions worth naming carry a label, the rest are icon-only with a tooltip, and the
+ones that come in families sit behind a split button whose face runs the most common
+of them. Everything here is also in the menus, so no action is reachable only through
+a dropdown.
+
+| Control | Face runs | Arrow opens |
+|---|---|---|
+| **New** | New archive | New Archive, Open Response List File |
+| **Open** | Open a POD or EPD archive | Open POD, Open Response List File, recent files |
+| **Save** | Save over the open archive | |
+| **Save As** | Write the entry list to a new archive | |
+| **Add** | Add Files | Add Files, Add Folder, Create Folder |
+| **Extract** | Extract Selected | Extract Selected, Extract All |
+| Remove | Drop the selected entries from the list | |
+| Expand All / Collapse All | Open or close every folder | |
+| Search | Open the search dialog | |
+| About | Version and credits, at the right edge | |
+
+The icons are glyphs from **Segoe MDL2 Assets**, the icon font Windows draws its own
+command bars with, rendered at the monitor's DPI so they stay sharp when the window
+moves between displays. That font arrived with Windows 10; on Windows 7 SP1 and 8.1
+the buttons fall back to plain text labels.
 
 ### Menus
 
@@ -260,6 +316,34 @@ dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x64 \
 
 Both produce a single executable. The Framework build compiles `KPod.Core`
 straight into the exe, since .NET Framework has no single-file publish.
+
+The .NET 10 publish turns on **ReadyToRun**, which compiles the app's IL to native
+code ahead of time so starting it does not have to JIT its own code first. It applies
+automatically whenever a runtime identifier is given, which the command above does,
+and it costs about 300 KB of executable size. Pass `-p:PublishReadyToRun=false` to
+trade the startup back for the smaller file.
+
+Do **not** add `-p:PublishReadyToRun=true` to the net48 command. ReadyToRun is a .NET
+Core feature that does nothing for .NET Framework, and asking for it makes the SDK
+pick a runtime identifier from whatever machine is doing the build, so publishing
+from a Mac quietly produces an ARM64 binary in `bin/Release/net48/osx-arm64/` that no
+Windows PC will run. The project fails the build with an explanation if you try. The
+.NET Framework build has no ReadyToRun equivalent short of NGen, which needs an
+installer rather than an xcopy.
+
+### Architectures
+
+The net48 executable is **AnyCPU**: one binary that runs on x86 and x64 Windows, as a
+64-bit process on x64. Nothing extra is needed to cover both.
+
+The .NET 10 build is per-architecture, because a runtime identifier is what lets it
+be a single file and be precompiled. Publish once per target:
+
+```sh
+dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x64   --self-contained false -p:PublishSingleFile=true -p:DebugType=none
+dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x86   --self-contained false -p:PublishSingleFile=true -p:DebugType=none
+dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-arm64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none
+```
 
 ### Writing for both targets
 

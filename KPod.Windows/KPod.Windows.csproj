@@ -14,11 +14,35 @@
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
   </PropertyGroup>
 
+  <!-- Compile the app's IL to native ahead of time so starting it does not have to
+       JIT its own code first. Publish only, and only with a runtime identifier,
+       which is what crossgen needs to know what to compile for. The .NET Framework
+       leg has no equivalent short of NGen, which needs an installer. -->
+  <PropertyGroup Condition="'$(TargetFramework)' != 'net48' And '$(RuntimeIdentifier)' != ''">
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <!-- ReadyToRun is a .NET Core feature and does nothing for .NET Framework, but
+       asking for it still has an effect: with no RuntimeIdentifier given, the SDK
+       sets one from the machine doing the build (see UseCurrentRuntimeIdentifier in
+       Microsoft.NET.RuntimeIdentifierInference.targets). Publishing net48 from a Mac
+       then quietly emits an ARM64 binary that no Windows PC will run. Fail loudly
+       instead. -->
+  <Target Name="RejectReadyToRunOnNetFramework" BeforeTargets="PrepareForBuild"
+          Condition="'$(TargetFramework)' == 'net48' And '$(PublishReadyToRun)' == 'true'">
+    <Error Text="PublishReadyToRun does nothing for the net48 build and makes the SDK infer a runtime identifier from this machine, producing a binary for the wrong architecture. Drop -p:PublishReadyToRun=true from the net48 publish; the net48 output is AnyCPU and already runs on x86 and x64. The .NET 10 publish enables ReadyToRun on its own." />
+  </Target>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFrameworks>net10.0-windows;net48</TargetFrameworks>
     <RootNamespace>KPod.Windows</RootNamespace>
     <AssemblyName>KPod</AssemblyName>
+    <!-- What Windows shows as "File description" in a file's Details tab, and what
+         Task Manager lists a running process under. It comes from AssemblyTitle, not
+         from Description: that one becomes the Comments field. Without this it would
+         default to the assembly name and just repeat "KPod". -->
+    <AssemblyTitle>POD authoring tool</AssemblyTitle>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationIcon>Assets\KPod.ico</ApplicationIcon>

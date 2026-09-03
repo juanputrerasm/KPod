@@ -26,7 +26,7 @@ public class PodArchiveFormatTests
 
         Assert.Equal(PodFormat.Pod1, written);
 
-        PodArchive archive = PodArchiveReader.Read(file);
+        using PodArchive archive = PodArchiveReader.Read(file);
         Assert.Equal(PodFormat.Pod1, archive.Format);
         Assert.Equal("POD1", archive.FormatDisplayName);
         Assert.Equal("classic archive", archive.Comment);
@@ -46,7 +46,7 @@ public class PodArchiveFormatTests
 
         Assert.Equal(PodFormat.Pod1Extended, written);
 
-        PodArchive archive = PodArchiveReader.Read(file);
+        using PodArchive archive = PodArchiveReader.Read(file);
         Assert.Equal(PodFormat.Pod1Extended, archive.Format);
         Assert.Equal("Extended POD1", archive.FormatDisplayName);
         Assert.True(archive.IsPod1Family);
@@ -75,7 +75,8 @@ public class PodArchiveFormatTests
         string name = new('A', 32);
 
         Assert.Equal(PodFormat.Pod1Extended, PodArchiveWriter.Write(file, string.Empty, [Blob(name, 4)]));
-        Assert.Equal(name, PodArchiveReader.Read(file).Entries[0].Name);
+        using PodArchive archive = PodArchiveReader.Read(file);
+        Assert.Equal(name, archive.Entries[0].Name);
     }
 
     [Fact]
@@ -86,7 +87,8 @@ public class PodArchiveFormatTests
         string name = new('A', 63);
 
         Assert.Equal(PodFormat.Pod1Extended, PodArchiveWriter.Write(file, string.Empty, [Blob(name, 4)]));
-        Assert.Equal(name, PodArchiveReader.Read(file).Entries[0].Name);
+        using PodArchive archive = PodArchiveReader.Read(file);
+        Assert.Equal(name, archive.Entries[0].Name);
     }
 
     [Fact]
@@ -106,7 +108,7 @@ public class PodArchiveFormatTests
             "handmade.pod",
             PodFixture.BuildPod164(new PodFile(LongName, PodFixture.Payload(6))));
 
-        PodArchive archive = PodArchiveReader.Read(file);
+        using PodArchive archive = PodArchiveReader.Read(file);
 
         Assert.Equal(PodFormat.Pod1Extended, archive.Format);
         Assert.Equal(LongName, archive.Entries[0].Name);
@@ -121,7 +123,8 @@ public class PodArchiveFormatTests
             "ambiguous.pod",
             PodFixture.BuildPod1(new PodFile(ShortName, PodFixture.Payload(6))));
 
-        Assert.Equal(PodFormat.Pod1, PodArchiveReader.Read(file).Format);
+        using PodArchive archive = PodArchiveReader.Read(file);
+        Assert.Equal(PodFormat.Pod1, archive.Format);
     }
 
     [Fact]
@@ -156,7 +159,7 @@ public class PodArchiveFormatTests
             new PodWriteOptions(PodFormat.Pod1, null, [], AllowDuplicateNames: true));
         string file = temp.WriteFile("dupes.pod", bytes);
 
-        PodArchive archive = PodArchiveReader.Read(file);
+        using PodArchive archive = PodArchiveReader.Read(file);
         Assert.Equal(2, archive.Entries.Count);
         Assert.Equal(ShortName, archive.Entries[0].Name);
         Assert.Equal(ShortName, archive.Entries[1].Name);
@@ -200,7 +203,7 @@ public class PodArchiveFormatTests
         byte[] bytes = PodFixture.BuildPod1(new PodFile(ShortName, PodFixture.Payload(6)));
         string file = temp.WriteFile("floor.pod", bytes);
 
-        PodArchive archive = PodArchiveReader.Read(file);
+        using PodArchive archive = PodArchiveReader.Read(file);
         Assert.Equal(PodFormat.Pod1, archive.Format);
         Assert.Equal(124, archive.Entries[0].Offset);
     }
@@ -230,7 +233,7 @@ public class PodArchiveFormatTests
         Array.Copy(extra, 0, bytes, 84 + ShortName.Length + 1, extra.Length);
         string file = temp.WriteFile("withextra.pod", bytes);
 
-        PodArchive archive = PodArchiveReader.Read(file);
+        using PodArchive archive = PodArchiveReader.Read(file);
         Assert.Equal(ShortName, archive.Entries[0].Name);
 
         List<PodBlob> blobs = [];
@@ -263,7 +266,7 @@ public class PodArchiveFormatTests
         Array.Copy(extra, 0, bytes, 84 + ShortName.Length + 1, extra.Length);
         string file = temp.WriteFile("mixed.pod", bytes);
 
-        PodArchive archive = PodArchiveReader.Read(file);
+        using PodArchive archive = PodArchiveReader.Read(file);
         PodEntry original = archive.Entries[0];
 
         // Adding a long-named entry forces the 64-byte directory; the preserved
@@ -318,7 +321,8 @@ public class PodArchiveFormatTests
         bytes[84] = 0x01;
         string file = temp.WriteFile("leading-control.pod", bytes);
 
-        Assert.Equal(@"RT\WALL01.RAW", PodArchiveReader.Read(file).Entries[0].Name);
+        using PodArchive archive = PodArchiveReader.Read(file);
+        Assert.Equal(@"RT\WALL01.RAW", archive.Entries[0].Name);
     }
 
     [Fact]
@@ -332,7 +336,7 @@ public class PodArchiveFormatTests
 
         using TempDir temp = new();
         string file = temp.WriteFile("original.pod", original);
-        PodArchive archive = PodArchiveReader.Read(file);
+        using PodArchive archive = PodArchiveReader.Read(file);
 
         List<PodBlob> blobs = [];
         foreach (PodEntry entry in archive.Entries)
@@ -356,7 +360,8 @@ public class PodArchiveFormatTests
         byte[] bytes = PodArchiveWriter.BuildBytes(string.Empty, [Blob("SHORT.RAW", 4)],
             new PodWriteOptions(PodFormat.Pod1Extended, null, []));
         string path = temp.WriteFile("forced.pod", bytes);
-        Assert.Equal(PodFormat.Pod1Extended, PodArchiveReader.Read(path).Format);
+        using (PodArchive archive = PodArchiveReader.Read(path))
+            Assert.Equal(PodFormat.Pod1Extended, archive.Format);
         Assert.Equal(84 + 72 + 4, bytes.Length);
     }
 
@@ -367,7 +372,7 @@ public class PodArchiveFormatTests
         byte[] palette = PodText.Latin1.GetBytes("VGA.ACT");
         Array.Copy(palette, 0, original, 84 + LongName.Length + 1, palette.Length);
         using TempDir temp = new();
-        PodArchive archive = PodArchiveReader.Read(temp.WriteFile("extended-palette.pod", original));
+        using PodArchive archive = PodArchiveReader.Read(temp.WriteFile("extended-palette.pod", original));
         PodEntry entry = archive.Entries[0];
         PodBlob blob = new(entry.Name, archive.GetEntryBytes(entry), entry.RawNameField,
             entry.EmbeddedPaletteName, 0);
@@ -388,7 +393,7 @@ public class PodArchiveFormatTests
             field, "METALCR2.ACT", 0);
         using TempDir temp = new();
         string path = temp.WriteFile("renamed.pod", PodArchiveWriter.BuildBytes("", [renamed]));
-        PodArchive archive = PodArchiveReader.Read(path);
+        using PodArchive archive = PodArchiveReader.Read(path);
         Assert.Equal(PodFormat.Pod1Extended, archive.Format);
         Assert.Equal("METALCR2.ACT", archive.Entries[0].EmbeddedPaletteName);
     }
@@ -403,7 +408,7 @@ public class PodArchiveFormatTests
         byte[] bytes = PodArchiveWriter.BuildBytes("pod2", [file],
             new PodWriteOptions(PodFormat.Pod2, null, [audit]));
         using TempDir temp = new();
-        PodArchive archive = PodArchiveReader.Read(temp.WriteFile("two.pod", bytes));
+        using PodArchive archive = PodArchiveReader.Read(temp.WriteFile("two.pod", bytes));
         Assert.Equal(PodFormat.Pod2, archive.Format);
         Assert.Equal(1_700_000_000u, archive.Entries[0].Timestamp);
         Assert.Equal(PodArchiveWriter.Crc32Mpeg2(payload), archive.Entries[0].Checksum);

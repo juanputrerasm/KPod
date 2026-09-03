@@ -65,7 +65,7 @@ public class PodExtractServiceTests
 
     private static PodSession NewSession(string podPath, string destination, bool preserveFolders)
     {
-        PodArchive archive = PodArchiveReader.Read(podPath);
+        using PodArchive archive = PodArchiveReader.Read(podPath);
         return new PodSession
         {
             SourceFolderPath = Path.GetDirectoryName(podPath),
