@@ -22,12 +22,22 @@ public static class PaletteResolver
     /// <list type="number">
     ///   <item>the palette named in the entry's own directory field</item>
     ///   <item>the same base name with an <c>.act</c> extension</item>
-    ///   <item>any <c>.act</c> in the same archive directory</item>
-    ///   <item><c>VGA.ACT</c> anywhere in the archive</item>
     ///   <item><c>METALCR2.ACT</c> anywhere in the archive</item>
+    ///   <item><c>VGA.ACT</c> anywhere in the archive</item>
     ///   <item>the bundled <c>metalcr2.act</c> resource</item>
-    ///   <item>greyscale</item>
     /// </list>
+    ///
+    /// <para>The archive's own <c>METALCR2.ACT</c> outranks the bundled copy because
+    /// they are not the same file: CPR ships a different METALCR2 from MTM1 and MTM2,
+    /// and taking the one the pod carries is right whichever game it came from. A
+    /// <c>VGA.ACT</c> in the pod says the archive belongs to one of the flight games,
+    /// and since nothing distinguishes Terminal Velocity from Fury3 or Hellbender at
+    /// this point, that copy is the only one that can be trusted.</para>
+    ///
+    /// <para>An <c>.act</c> whose name matches nothing is never guessed at. Picking
+    /// whichever differently-named palette happened to sit in the same folder was a
+    /// coin toss dressed up as a rule; those are offered last in the choice list and
+    /// chosen by hand.</para>
     ///
     /// <para>Step one matters more than its position suggests. Where the packer
     /// wrote a palette name, the rules below it are close to useless: on
@@ -63,18 +73,10 @@ public static class PaletteResolver
                 }
             }
 
-            int slash = Math.Max(entryName.LastIndexOf('\\'), entryName.LastIndexOf('/'));
-            string directoryPrefix = slash >= 0
-                ? entryName.Substring(0, slash + 1).ToUpperInvariant()
-                : string.Empty;
-            foreach (PodEntry entry in archive.Entries)
+            PodEntry? metal = FindArchivePalette(archive, MetalPalette);
+            if (metal is not null)
             {
-                string upper = entry.Name.ToUpperInvariant();
-                if (upper.StartsWith(directoryPrefix, StringComparison.Ordinal)
-                    && upper.EndsWith(".ACT", StringComparison.Ordinal))
-                {
-                    return TryDecodeAct(archive.GetEntryBytes(entry));
-                }
+                return TryDecodeAct(archive.GetEntryBytes(metal));
             }
 
             PodEntry? vga = FindArchivePalette(archive, VgaPalette);
@@ -82,107 +84,71 @@ public static class PaletteResolver
             {
                 return TryDecodeAct(archive.GetEntryBytes(vga));
             }
-
-            PodEntry? metal = FindArchivePalette(archive, MetalPalette);
-            if (metal is not null)
-            {
-                return TryDecodeAct(archive.GetEntryBytes(metal));
-            }
         }
 
         return RawImageDecoder.LoadResourcePalette();
     }
 
     /// <summary>
-    /// The palette list offered when the user has to pick dimensions by hand: the
-    /// same-name ACT first when it exists, then VGA, then every other ACT in the
-    /// archive, then METALCR2, greyscale, and the bundled palette.
+    /// The complete palette list offered by every RAW preview. Its default follows
+    /// <see cref="Resolve"/>, the four bundled game palettes and greyscale are always
+    /// available, and every other <c>.act</c> in the archive is offered last for
+    /// correcting an ambiguous archive by hand.
     /// </summary>
     public static PaletteChoices ResolveChoices(
         string entryName, PodArchive? archive, byte[]? rawNameField = null)
     {
         List<PaletteChoice> choices = [];
         int defaultIndex = -1;
+        HashSet<string> addedEntries = new(StringComparer.OrdinalIgnoreCase);
+
+        void AddArchive(PodEntry? entry, string label, bool canBeDefault = true)
+        {
+            if (entry is null || !addedEntries.Add(entry.Name)) return;
+            choices.Add(new PaletteChoice(label, TryDecodeAct(archive!.GetEntryBytes(entry))));
+            if (canBeDefault && defaultIndex < 0) defaultIndex = choices.Count - 1;
+        }
 
         if (archive is not null)
         {
             PodEntry? stored = FindStoredPalette(archive, rawNameField);
-            if (stored is not null)
-            {
-                choices.Add(new PaletteChoice(
-                    "Stored in the archive: " + stored.Name,
-                    TryDecodeAct(archive.GetEntryBytes(stored))));
-                defaultIndex = 0;
-            }
+            AddArchive(stored, "Stored in the archive: " + stored?.Name);
 
             int dot = entryName.LastIndexOf('.');
             if (dot > 0)
             {
                 PodEntry? sameName = archive.FindEntry(entryName.Substring(0, dot) + ".act");
-                if (sameName is not null)
-                {
-                    choices.Add(new PaletteChoice(
-                        "Same-name ACT: " + sameName.Name,
-                        TryDecodeAct(archive.GetEntryBytes(sameName))));
-                    if (defaultIndex < 0)
-                    {
-                        defaultIndex = choices.Count - 1;
-                    }
-                }
-            }
-
-            PodEntry? vga = FindArchivePalette(archive, VgaPalette);
-            if (vga is not null)
-            {
-                choices.Add(new PaletteChoice(VgaPalette, TryDecodeAct(archive.GetEntryBytes(vga))));
-                if (defaultIndex < 0)
-                {
-                    defaultIndex = choices.Count - 1;
-                }
-            }
-
-            foreach (PodEntry entry in archive.Entries)
-            {
-                string upper = entry.Name.ToUpperInvariant();
-                if (!upper.EndsWith(".ACT", StringComparison.Ordinal)
-                    || upper.EndsWith(MetalPalette, StringComparison.Ordinal)
-                    || upper.EndsWith(VgaPalette, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                choices.Add(new PaletteChoice(
-                    "Archive ACT: " + entry.Name,
-                    TryDecodeAct(archive.GetEntryBytes(entry))));
+                AddArchive(sameName, "Same-name ACT: " + sameName?.Name);
             }
 
             PodEntry? metal = FindArchivePalette(archive, MetalPalette);
-            if (metal is not null)
-            {
-                choices.Add(new PaletteChoice(MetalPalette, TryDecodeAct(archive.GetEntryBytes(metal))));
-            }
+            AddArchive(metal, "Archive " + (metal?.Name ?? MetalPalette));
+
+            PodEntry? vga = FindArchivePalette(archive, VgaPalette);
+            AddArchive(vga, "Archive " + (vga?.Name ?? VgaPalette));
         }
 
-        int greyscaleIndex = choices.Count;
+        int mtm1Index = choices.Count;
+        choices.Add(new PaletteChoice("METALCR2 (MTM1)", BundledPalettes.MetalCr2Mtm1()));
+        choices.Add(new PaletteChoice("METALCR2 (CPR)", BundledPalettes.MetalCr2Cpr()));
+        choices.Add(new PaletteChoice("VGA (Hellbender)", BundledPalettes.VgaHellbender()));
+        choices.Add(new PaletteChoice("VGA (TV/F3)", BundledPalettes.VgaTerminalVelocity()));
         choices.Add(new PaletteChoice("Greyscale", RawImageDecoder.GreyscalePalette()));
         if (defaultIndex < 0)
         {
-            defaultIndex = greyscaleIndex;
+            defaultIndex = mtm1Index;
         }
 
-        bool hasMetal = false;
-        foreach (PaletteChoice choice in choices)
+        // Every remaining palette in the archive, last and never the default. These are
+        // the differently-named ones: real enough to be worth offering, and never a
+        // safe guess, so they sit below the palettes that can be reasoned about.
+        if (archive is not null)
         {
-            if (choice.Label == MetalPalette)
+            foreach (PodEntry entry in archive.Entries)
             {
-                hasMetal = true;
-                break;
+                if (entry.Name.EndsWith(".ACT", StringComparison.OrdinalIgnoreCase))
+                    AddArchive(entry, "Archive ACT: " + entry.Name, canBeDefault: false);
             }
-        }
-
-        if (!hasMetal)
-        {
-            choices.Add(new PaletteChoice("Bundled " + MetalPalette, RawImageDecoder.LoadResourcePalette()));
         }
 
         return new PaletteChoices(choices, defaultIndex);

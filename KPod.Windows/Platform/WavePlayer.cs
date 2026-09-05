@@ -18,7 +18,7 @@ namespace KPod.Windows.Platform;
 /// <see cref="SupportsPauseAndPosition"/> goes false so the UI can disable what it
 /// cannot offer.</para>
 /// </summary>
-internal sealed class WavePlayer : IDisposable
+internal sealed class WavePlayer : IAudioPlayer
 {
     [DllImport("winmm.dll", CharSet = CharSet.Auto)]
     private static extern int mciSendString(string command, StringBuilder? result, int resultLength, IntPtr callback);
@@ -28,6 +28,7 @@ internal sealed class WavePlayer : IDisposable
     private readonly SoundPlayer? _fallback;
     private bool _mciOpen;
     private bool _disposed;
+    private AudioPlaybackState _fallbackState;
 
     internal WavePlayer(byte[] data)
     {
@@ -44,7 +45,7 @@ internal sealed class WavePlayer : IDisposable
 
         if (_mciOpen)
         {
-            LengthMilliseconds = QueryInt("status " + _alias + " length");
+            Duration = TimeSpan.FromMilliseconds(QueryInt("status " + _alias + " length"));
             return;
         }
 
@@ -60,34 +61,40 @@ internal sealed class WavePlayer : IDisposable
         }
     }
 
-    /// <summary>False when playback fell back to SoundPlayer, which offers neither.</summary>
-    internal bool SupportsPauseAndPosition => _mciOpen;
+    public bool IsAvailable => _mciOpen || _fallback is not null;
+    public string? ErrorMessage => IsAvailable ? null : "Cannot play this WAV file.";
+    public bool CanSeek => _mciOpen;
+    public TimeSpan Duration { get; }
+    public TimeSpan Position => _mciOpen
+        ? TimeSpan.FromMilliseconds(QueryInt("status " + _alias + " position"))
+        : TimeSpan.Zero;
+    public AudioPlaybackState State
+    {
+        get
+        {
+            if (!_mciOpen) return _fallbackState;
+            string mode = Query("status " + _alias + " mode");
+            if (string.Equals(mode, "playing", StringComparison.Ordinal)) return AudioPlaybackState.Playing;
+            if (string.Equals(mode, "paused", StringComparison.Ordinal)) return AudioPlaybackState.Paused;
+            return AudioPlaybackState.Stopped;
+        }
+    }
 
-    /// <summary>True when nothing could open the data at all.</summary>
-    internal bool IsUnplayable => !_mciOpen && _fallback is null;
-
-    /// <summary>Total length in milliseconds, or 0 when it cannot be known.</summary>
-    internal int LengthMilliseconds { get; }
-
-    /// <summary>Current position in milliseconds, or 0 without MCI.</summary>
-    internal int PositionMilliseconds => _mciOpen ? QueryInt("status " + _alias + " position") : 0;
-
-    /// <summary>True while audio is actually playing.</summary>
-    internal bool IsPlaying =>
-        _mciOpen && string.Equals(Query("status " + _alias + " mode"), "playing", StringComparison.Ordinal);
-
-    internal void Play()
+    public void Play()
     {
         if (_mciOpen)
         {
+            if (Duration > TimeSpan.Zero && Position >= Duration)
+                Send("seek " + _alias + " to start");
             Send("play " + _alias);
             return;
         }
 
         _fallback?.Play();
+        if (_fallback is not null) _fallbackState = AudioPlaybackState.Playing;
     }
 
-    internal void Pause()
+    public void Pause()
     {
         if (_mciOpen)
         {
@@ -96,9 +103,10 @@ internal sealed class WavePlayer : IDisposable
         }
 
         _fallback?.Stop();
+        if (_fallback is not null) _fallbackState = AudioPlaybackState.Paused;
     }
 
-    internal void Resume()
+    public void Resume()
     {
         if (_mciOpen)
         {
@@ -107,9 +115,10 @@ internal sealed class WavePlayer : IDisposable
         }
 
         _fallback?.Play();
+        if (_fallback is not null) _fallbackState = AudioPlaybackState.Playing;
     }
 
-    internal void Stop()
+    public void Stop()
     {
         if (_mciOpen)
         {
@@ -119,6 +128,20 @@ internal sealed class WavePlayer : IDisposable
         }
 
         _fallback?.Stop();
+        _fallbackState = AudioPlaybackState.Stopped;
+    }
+
+    public void Seek(TimeSpan position)
+    {
+        if (!_mciOpen) return;
+        int milliseconds = (int)Math.Max(0, Math.Min(Duration.TotalMilliseconds, position.TotalMilliseconds));
+        AudioPlaybackState previous = State;
+        Send("seek " + _alias + " to " + milliseconds.ToString(CultureInfo.InvariantCulture));
+        if (previous is AudioPlaybackState.Playing or AudioPlaybackState.Paused)
+        {
+            Send("play " + _alias);
+            if (previous == AudioPlaybackState.Paused) Send("pause " + _alias);
+        }
     }
 
     public void Dispose()

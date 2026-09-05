@@ -22,7 +22,7 @@ public class PaletteResolverTests
     }
 
     [Fact]
-    public void AnActInTheSameDirectoryIsUsedWhenNoNameMatches()
+    public void ADifferentlyNamedActIsNeverGuessedAtButIsStillOffered()
     {
         using TempDir temp = new();
         PodArchive archive = Archive(
@@ -30,17 +30,37 @@ public class PaletteResolverTests
             new PodFile(@"ART\DEMO1.RAW", new byte[16]),
             new PodFile(@"ART\OTHER.ACT", SolidAct(0, 0, 63)));
 
-        Assert.Equal(unchecked((int)0xFF0000FF), PaletteResolver.Resolve(@"ART\DEMO1.RAW", archive)[0]);
+        Assert.Equal(
+            RawImageDecoder.LoadResourcePalette(),
+            PaletteResolver.Resolve(@"ART\DEMO1.RAW", archive));
+
+        PaletteChoices choices = PaletteResolver.ResolveChoices(@"ART\DEMO1.RAW", archive);
+        Assert.Equal("METALCR2 (MTM1)", choices.Choices[choices.DefaultIndex].Label);
+        Assert.EndsWith(@"ART\OTHER.ACT", choices.Choices[^1].Label, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void VgaActIsPreferredOverMetalcr2()
+    public void TheArchivesOwnMetalcr2IsPreferredOverItsVgaAndOverTheBundledCopy()
     {
+        // METALCR2 is not one palette: CPR ships a different one from MTM1 and MTM2,
+        // so the copy the pod carries is the only one known to match its art.
         using TempDir temp = new();
         PodArchive archive = Archive(
             temp,
             new PodFile(@"ART\DEMO1.RAW", new byte[16]),
             new PodFile("METALCR2.ACT", SolidAct(63, 63, 0)),
+            new PodFile("VGA.ACT", SolidAct(0, 63, 0)));
+
+        Assert.Equal(unchecked((int)0xFFFFFF00), PaletteResolver.Resolve(@"ART\DEMO1.RAW", archive)[0]);
+    }
+
+    [Fact]
+    public void AVgaActAloneMeansAFlightGameAndIsUsedAsIs()
+    {
+        using TempDir temp = new();
+        PodArchive archive = Archive(
+            temp,
+            new PodFile(@"ART\DEMO1.RAW", new byte[16]),
             new PodFile("VGA.ACT", SolidAct(0, 63, 0)));
 
         Assert.Equal(unchecked((int)0xFF00FF00), PaletteResolver.Resolve(@"ART\DEMO1.RAW", archive)[0]);
@@ -72,11 +92,28 @@ public class PaletteResolverTests
     }
 
     [Fact]
-    public void WithNoArchiveGreyscaleIsTheDefaultChoice()
+    public void WithNoArchiveMtm1IsTheDefaultAndEveryBundledPaletteIsOffered()
     {
         PaletteChoices choices = PaletteResolver.ResolveChoices("LOOSE.RAW", null);
 
-        Assert.Equal("Greyscale", choices.Choices[choices.DefaultIndex].Label);
+        Assert.Equal("METALCR2 (MTM1)", choices.Choices[choices.DefaultIndex].Label);
+        Assert.Contains(choices.Choices, choice => choice.Label == "METALCR2 (CPR)");
+        Assert.Contains(choices.Choices, choice => choice.Label == "VGA (Hellbender)");
+        Assert.Contains(choices.Choices, choice => choice.Label == "VGA (TV/F3)");
+        Assert.Contains(choices.Choices, choice => choice.Label == "Greyscale");
+    }
+
+    [Fact]
+    public void BundledPalettesAreCompleteAndDistinct()
+    {
+        int[][] palettes =
+        [
+            BundledPalettes.MetalCr2Mtm1(), BundledPalettes.MetalCr2Cpr(),
+            BundledPalettes.VgaHellbender(), BundledPalettes.VgaTerminalVelocity(),
+        ];
+
+        Assert.All(palettes, palette => Assert.Equal(256, palette.Length));
+        Assert.Equal(4, palettes.Select(palette => string.Join(",", palette)).Distinct().Count());
     }
 
     [Fact]

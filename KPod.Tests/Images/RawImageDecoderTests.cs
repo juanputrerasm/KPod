@@ -70,6 +70,9 @@ public class RawImageDecoderTests
     [InlineData(4096, 64, 64)]
     [InlineData(65536, 256, 256)]
     [InlineData(1024, 32, 32)]
+    [InlineData(64000, 320, 200)]
+    [InlineData(256000, 640, 400)]
+    [InlineData(307200, 640, 480)]
     public void SquarePayloadsDetectTheirOwnDimensions(int byteCount, int width, int height)
     {
         (int Width, int Height)? dims = RawImageDecoder.DetectDimensions(byteCount);
@@ -79,8 +82,8 @@ public class RawImageDecoderTests
     }
 
     [Fact]
-    public void NonSquarePayloadsHaveNoDetectedDimensions() =>
-        Assert.Null(RawImageDecoder.DetectDimensions(64000));
+    public void UnknownNonSquarePayloadsHaveNoDetectedDimensions() =>
+        Assert.Null(RawImageDecoder.DetectDimensions(12345));
 
     [Theory]
     [InlineData(64000, 320, 200)]
@@ -112,6 +115,12 @@ public class RawImageDecoderTests
         Assert.True(RawImageDecoder.IsTextFile("LAGUNA.SIT"));
         Assert.True(RawImageDecoder.IsTextFile("readme.txt"));
         Assert.False(RawImageDecoder.IsTextFile("WALL.RAW"));
+        // The CommPatch extensions carry the same text payload their enabled
+        // counterparts do, so the preview has to keep reading them.
+        foreach (string name in new[] { "LAGUNA.SI2", "LAGUNA.SIX", "LAGUNA.SIY", "BIGFOOT.TRX", "LAGUNA.TXV" })
+        {
+            Assert.True(RawImageDecoder.IsTextFile(name), name);
+        }
     }
 
     [Fact]

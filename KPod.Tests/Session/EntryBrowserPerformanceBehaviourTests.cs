@@ -59,7 +59,7 @@ public class EntryBrowserPerformanceBehaviourTests
         browser.Refresh();
 
         Assert.Equal(
-            ["Palette file", "Text file", "Wave audio file"],
+            ["Text file", "VGA palette", "Wave audio file"],
             browser.Rows.Select(r => r.Description));
     }
 

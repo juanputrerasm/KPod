@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using KPod.Core.Compat;
 using KPod.Core.Images;
 using KPod.Core.Pods;
@@ -22,7 +24,11 @@ internal sealed class PreviewForm : Form
 {
     private const int MaxPreviewWidth = 1024;
     private const int MaxPreviewHeight = 768;
+    /// <summary>Room for a scrollbar on each axis, so the image is never clipped by one.</summary>
+    private const int ScrollBarAllowance = 20;
+    private const int ContentPadding = 24;
     private const int HexDumpLimit = 4096;
+    private static string? _savedRawPaletteLabel;
 
     private PreviewForm(string entryName)
     {
@@ -47,10 +53,18 @@ internal sealed class PreviewForm : Form
     {
         // Shown modally, so ShowDialog rather than Show. ShowDialog does not
         // dispose the form on close the way Show does, hence the using.
-        if (entryName.EndsWith(".WAV", StringComparison.OrdinalIgnoreCase))
+        if (entryName.EndsWith(".WAV", StringComparison.OrdinalIgnoreCase)
+            || entryName.EndsWith(".MOD", StringComparison.OrdinalIgnoreCase))
         {
             using AudioPlayerForm player = new(entryName, data);
             player.ShowDialog(owner);
+            return;
+        }
+
+        if (entryName.EndsWith(".BIN", StringComparison.OrdinalIgnoreCase))
+        {
+            using BinPreviewForm viewer = new(entryName, data, archive);
+            viewer.ShowDialog(owner);
             return;
         }
 
@@ -79,6 +93,34 @@ internal sealed class PreviewForm : Form
         if (RawImageDecoder.IsActPalette(entryName))
         {
             BuildActPalette(entryName, data);
+            return true;
+        }
+
+        if (entryName.EndsWith(".TGA", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                BuildImage(ImageBuilder.ToBitmap(TgaImageDecoder.Decode(data, entryName)), checkerboard: true);
+            }
+            catch (ArgumentException ex)
+            {
+                BuildMessage(ex.Message);
+            }
+            return true;
+        }
+
+        if (entryName.EndsWith(".PNG", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using MemoryStream stream = new(data, writable: false);
+                using Image decoded = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
+                BuildImage(new Bitmap(decoded), checkerboard: true);
+            }
+            catch (Exception ex) when (ex is ArgumentException or OutOfMemoryException or NotSupportedException)
+            {
+                BuildMessage("Invalid PNG image: " + ex.Message);
+            }
             return true;
         }
 
@@ -113,7 +155,13 @@ internal sealed class PreviewForm : Form
         (int Width, int Height)? detected = RawImageDecoder.DetectDimensions(data.Length);
         int width;
         int height;
-        int[] palette;
+        PaletteChoices palettes = PaletteResolver.ResolveChoices(entryName, archive, rawNameField);
+        int selectedIndex = palettes.DefaultIndex;
+        if (_savedRawPaletteLabel is not null)
+        {
+            int saved = palettes.Choices.ToList().FindIndex(choice => choice.Label == _savedRawPaletteLabel);
+            if (saved >= 0) selectedIndex = saved;
+        }
 
         if (detected is null)
         {
@@ -125,41 +173,133 @@ internal sealed class PreviewForm : Form
 
             width = prompt.Options.Width;
             height = prompt.Options.Height;
-            palette = prompt.Options.Palette;
+            int prompted = palettes.Choices.ToList().FindIndex(choice => choice.Label == prompt.Options.PaletteLabel);
+            if (prompted >= 0) selectedIndex = prompted;
         }
         else
         {
             (width, height) = detected.Value;
-            palette = PaletteResolver.Resolve(entryName, archive, rawNameField);
         }
 
-        Bitmap bitmap = ImageBuilder.ToBitmap(RawImageDecoder.DecodeRaw(data, palette, width, height));
+        ComboBox palettePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
+        foreach (PaletteChoice choice in palettes.Choices) palettePicker.Items.Add(choice.Label);
+        palettePicker.SelectedIndex = Math.Max(0, Math.Min(selectedIndex, palettePicker.Items.Count - 1));
 
-        // Art textures are 64x64; at 1:1 they are too small to judge.
-        if (width <= 64)
+        Button save = new() { Text = "Save as BMP...", AutoSize = true };
+        FlowLayoutPanel controls = new()
         {
-            bitmap = ImageBuilder.ScaleNearest(bitmap, 4);
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            Padding = new Padding(8, 6, 8, 6),
+            WrapContents = false,
+        };
+        controls.Controls.Add(new Label { Text = "Palette:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) });
+        controls.Controls.Add(palettePicker);
+        controls.Controls.Add(save);
+
+        Panel scroll = new() { Dock = DockStyle.Fill, AutoScroll = true };
+        Controls.Add(scroll);
+        Controls.Add(controls);
+        scroll.Resize += (_, _) => CentreCanvas(scroll);
+
+        Bitmap? original = null;
+        ImageCanvas? canvas = null;
+        void Repaint()
+        {
+            int index = Math.Max(0, palettePicker.SelectedIndex);
+            PaletteChoice choice = palettes.Choices[index];
+            _savedRawPaletteLabel = choice.Label;
+            original?.Dispose();
+            original = ImageBuilder.ToBitmap(RawImageDecoder.DecodeRaw(data, choice.Palette, width, height));
+            Bitmap display = width <= 64 ? ImageBuilder.ScaleNearest(new Bitmap(original), 4) : new Bitmap(original);
+            if (canvas is null)
+            {
+                canvas = new ImageCanvas(display, checkerboard: false);
+                scroll.Controls.Add(canvas);
+            }
+            else canvas.ReplaceImage(display);
+            CentreCanvas(scroll);
         }
 
-        BuildImage(bitmap);
+        palettePicker.SelectedIndexChanged += (_, _) => Repaint();
+        save.Click += (_, _) =>
+        {
+            if (original is null) return;
+            using SaveFileDialog dialog = new()
+            {
+                Filter = "Bitmap image (*.bmp)|*.bmp|All files (*.*)|*.*",
+                FileName = Path.GetFileNameWithoutExtension(entryName) + ".bmp",
+                AddExtension = true,
+                DefaultExt = "bmp",
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK) original.Save(dialog.FileName, ImageFormat.Bmp);
+        };
+
+        Repaint();
+        SizeToContent(new Size(canvas?.Width ?? width, canvas?.Height ?? height), controls);
+        Disposed += (_, _) => original?.Dispose();
+
         return true;
     }
 
-    private void BuildImage(Bitmap bitmap)
+    private void BuildImage(Bitmap bitmap, bool checkerboard = false)
     {
-        PictureBox picture = new()
-        {
-            Image = bitmap,
-            SizeMode = PictureBoxSizeMode.AutoSize,
-        };
+        ImageCanvas picture = new(bitmap, checkerboard);
         Panel scroll = new() { Dock = DockStyle.Fill, AutoScroll = true };
         scroll.Controls.Add(picture);
         Controls.Add(scroll);
+        scroll.Resize += (_, _) => CentreCanvas(scroll);
 
+        SizeToContent(bitmap.Size, toolbar: null);
+    }
+
+    /// <summary>
+    /// Sizes the window to hold the image <em>and</em> the toolbar above it. Sizing from
+    /// the image alone is what used to push "Save as BMP..." off the right-hand edge of a
+    /// small texture's window: a 64x64 RAW is 256 pixels wide once magnified, and the
+    /// palette row needs closer to 450.
+    /// </summary>
+    private void SizeToContent(Size content, Control? toolbar)
+    {
+        Size bar = toolbar is null ? Size.Empty : MeasureToolbar(toolbar);
+        int width = Math.Max(content.Width + ScrollBarAllowance, bar.Width) + ContentPadding;
+        int height = content.Height + bar.Height + ScrollBarAllowance + ContentPadding;
         ClientSize = ScreenFit.Cap(
-            Math.Min(bitmap.Width + 40, MaxPreviewWidth),
-            Math.Min(bitmap.Height + 60, MaxPreviewHeight));
-        Disposed += (_, _) => bitmap.Dispose();
+            Math.Min(width, MaxPreviewWidth), Math.Min(height, MaxPreviewHeight));
+        // A window narrower than the toolbar clips its own buttons, so make that
+        // unreachable by dragging as well.
+        MinimumSize = new Size(
+            Math.Min(bar.Width + ContentPadding, MaxPreviewWidth) + (Width - ClientSize.Width),
+            MinimumSize.Height);
+    }
+
+    /// <summary>
+    /// The room a single non-wrapping row of controls needs. Summed from the children
+    /// rather than read off the panel: this runs before the window is shown, when a
+    /// docked panel has not been laid out and an AutoSize button still reports the
+    /// default 75 pixels rather than the width its caption needs.
+    /// </summary>
+    internal static Size MeasureToolbar(Control toolbar)
+    {
+        int width = toolbar.Padding.Horizontal;
+        int height = 0;
+        foreach (Control child in toolbar.Controls)
+        {
+            Size preferred = child.GetPreferredSize(Size.Empty);
+            width += Math.Max(child.Width, preferred.Width) + child.Margin.Horizontal;
+            height = Math.Max(height, Math.Max(child.Height, preferred.Height) + child.Margin.Vertical);
+        }
+        return new Size(width, height + toolbar.Padding.Vertical);
+    }
+
+    /// <summary>Keeps an image smaller than its viewport in the middle of it.</summary>
+    private static void CentreCanvas(Panel scroll)
+    {
+        if (scroll.Controls.Count == 0) return;
+        Control canvas = scroll.Controls[0];
+        canvas.Location = new Point(
+            Math.Max(0, (scroll.ClientSize.Width - canvas.Width) / 2),
+            Math.Max(0, (scroll.ClientSize.Height - canvas.Height) / 2));
     }
 
     private void BuildActPalette(string entryName, byte[] data)
@@ -270,6 +410,51 @@ internal sealed class PreviewForm : Form
         }
 
         return text.ToString();
+    }
+}
+
+/// <summary>Owns and draws a bitmap, with an optional transparency checkerboard.</summary>
+internal sealed class ImageCanvas : Control
+{
+    private Bitmap _image;
+    private readonly bool _checkerboard;
+
+    internal ImageCanvas(Bitmap image, bool checkerboard)
+    {
+        _image = image;
+        _checkerboard = checkerboard;
+        DoubleBuffered = true;
+        Size = image.Size;
+    }
+
+    internal void ReplaceImage(Bitmap image)
+    {
+        Bitmap old = _image;
+        _image = image;
+        Size = image.Size;
+        old.Dispose();
+        Invalidate();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        if (_checkerboard)
+        {
+            const int tile = 12;
+            using SolidBrush light = new(Color.White);
+            using SolidBrush dark = new(Color.LightGray);
+            for (int y = 0; y < Height; y += tile)
+                for (int x = 0; x < Width; x += tile)
+                    e.Graphics.FillRectangle(((x / tile) + (y / tile)) % 2 == 0 ? light : dark, x, y, tile, tile);
+        }
+        e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+        e.Graphics.DrawImageUnscaled(_image, 0, 0);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _image.Dispose();
+        base.Dispose(disposing);
     }
 }
 

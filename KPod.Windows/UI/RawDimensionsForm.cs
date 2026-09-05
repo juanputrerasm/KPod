@@ -4,7 +4,7 @@ using KPod.Core.Pods;
 namespace KPod.Windows.UI;
 
 /// <summary>The dimensions and palette chosen for a non-standard RAW payload.</summary>
-internal sealed record RawPreviewOptions(int Width, int Height, int[] Palette);
+internal sealed record RawPreviewOptions(int Width, int Height, string PaletteLabel);
 
 /// <summary>
 /// Asks for width, height and palette when a RAW payload is not one of the sizes
@@ -160,11 +160,11 @@ internal sealed class RawDimensionsForm : Form
             return;
         }
 
-        int[] palette = _palettes.SelectedIndex >= 0 && _palettes.SelectedIndex < _paletteChoices.Count
-            ? _paletteChoices[_palettes.SelectedIndex].Palette
-            : RawImageDecoder.LoadResourcePalette();
+        string paletteLabel = _palettes.SelectedIndex >= 0 && _palettes.SelectedIndex < _paletteChoices.Count
+            ? _paletteChoices[_palettes.SelectedIndex].Label
+            : "METALCR2 (MTM1)";
 
-        Options = new RawPreviewOptions(width, height, palette);
+        Options = new RawPreviewOptions(width, height, paletteLabel);
         DialogResult = DialogResult.OK;
         Close();
     }

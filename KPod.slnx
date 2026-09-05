@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="KPod.Core/KPod.Core.csproj" />
   <Project Path="KPod.Windows/KPod.Windows.csproj" />
+  <Project Path="KPod.Windows.Tests/KPod.Windows.Tests.csproj" />
   <Project Path="KPod.Tests/KPod.Tests.csproj" />
 </Solution>

@@ -582,6 +582,9 @@ internal sealed class MainForm : Form
 
         BrowserRow? row = viewRow >= 0 && viewRow < _browser.Rows.Count ? _browser.Rows[viewRow] : null;
         ContextMenuStrip menu = new();
+        int[] selection = SelectedSourceIndices();
+        bool anyEnabled = selection.Any(index => PodEntryDisabling.CanDisable(_browser.Entries[index].Name));
+        bool anyDisabled = selection.Any(index => PodEntryDisabling.CanEnable(_browser.Entries[index].Name));
         if (row is not null && row.IsFolder)
         {
             menu.Items.Add(MenuItem(row.Collapsed ? "Expand" : "Collapse", () => ActivateRow(viewRow)));
@@ -589,6 +592,7 @@ internal sealed class MainForm : Form
             menu.Items.Add(MenuItem("Rename Folder...", () => OnRename(viewRow)));
             menu.Items.Add(MenuItem("Move To Folder...", OnMoveSelected));
             menu.Items.Add(MenuItem("Remove", OnRemoveSelected));
+            AddDisablingItems(menu, anyEnabled, anyDisabled);
             menu.Items.Add(MenuItem("Extract Selected", OnExtractSelected));
         }
         else
@@ -599,11 +603,24 @@ internal sealed class MainForm : Form
             menu.Items.Add(MenuItem("Move To Folder...", OnMoveSelected));
             menu.Items.Add(MenuItem("Replace with File...", OnReplaceEntry));
             menu.Items.Add(MenuItem("Remove", OnRemoveSelected));
+            AddDisablingItems(menu, anyEnabled, anyDisabled);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(MenuItem("Extract Selected", OnExtractSelected));
         }
 
         menu.Show(_list, location);
+    }
+
+    /// <summary>
+    /// Offers the CommPatch 26 disable and enable renames, but only for a selection
+    /// that has something to rename. A pod of art has neither item.
+    /// </summary>
+    private void AddDisablingItems(ContextMenuStrip menu, bool anyEnabled, bool anyDisabled)
+    {
+        if (!anyEnabled && !anyDisabled) return;
+        menu.Items.Add(new ToolStripSeparator());
+        if (anyEnabled) menu.Items.Add(MenuItem("Disable in Game", () => ApplyDisabling(disable: true)));
+        if (anyDisabled) menu.Items.Add(MenuItem("Enable in Game", () => ApplyDisabling(disable: false)));
     }
 
     // -------------------------------------------------------------------------
@@ -1377,6 +1394,41 @@ internal sealed class MainForm : Form
         foreach ((EditableEntry old, string name) in renamed) AddMoveAudit(old.Name, name, old);
         MarkDirty();
         RefreshList();
+    }
+
+    /// <summary>
+    /// Renames the selected tracks and trucks between the extensions the game reads
+    /// and the ones it passes over. The payload is untouched, so a disabled addon
+    /// still costs its space in the pod and comes back byte for byte.
+    /// </summary>
+    private void ApplyDisabling(bool disable)
+    {
+        int[] indices = SelectedSourceIndices();
+        if (indices.Length == 0) return;
+        List<EditableEntry> changed = [.. _browser.Entries];
+        List<(EditableEntry Old, string NewName)> renamed = [];
+        foreach (int index in indices)
+        {
+            EditableEntry entry = changed[index];
+            string? newName = disable
+                ? PodEntryDisabling.Disable(entry.Name)
+                : PodEntryDisabling.Enable(entry.Name);
+            if (newName is null) continue;
+            changed[index] = RenamedEntry(entry, newName);
+            renamed.Add((entry, newName));
+        }
+        if (renamed.Count == 0) return;
+        if (!ValidateEditedEntries(changed)) return;
+        _browser.Entries.Clear();
+        foreach (EditableEntry entry in changed) _browser.Entries.Add(entry);
+        foreach ((EditableEntry old, string name) in renamed) AddMoveAudit(old.Name, name, old);
+        MarkDirty();
+        RefreshList();
+        // Worth saying every time: the rename is invisible in single player, but the
+        // other end of a multiplayer game sees a pod that no longer matches theirs.
+        _progress.Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            "{0} {1} entr{2}. Changing a track pod's status can trigger the multiplayer Different Version message.",
+            disable ? "Disabled" : "Enabled", renamed.Count, renamed.Count == 1 ? "y" : "ies");
     }
 
     private void OnMoveSelected()

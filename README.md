@@ -9,19 +9,18 @@
 
 KPod opens, browses, previews, extracts and builds the `POD` archives used by
 *Monster Truck Madness 1 & 2*, *CART Precision Racing*, *Hellbender*, *Terminal
-Velocity*, *Fury3* and their relatives. It reads and writes both the classic POD1
-directory and the Community Patch 3 **POD1-64** extension with 64-byte entry
+Velocity*, *Fury3*, *Nocturne*, *4x4 EVO 1 & 2* and their relatives. It reads and writes both the classic POD1
+format and the Community Patch 3 **POD1-64** extension with 64-byte entry
 names. It also reads and explicitly authors `POD2`; `EPD` remains read-only.
 
-It is the Windows-native port of
+It started as a Windows-native port of
 [JPod](https://github.com/juanputrerasm/JPod), the Java 17 original, and matches
 it byte for byte: the same archives, the same `.inf` and `.lst` reports, the same
 format names.
 
 ![KPod browsing ALASKA.POD with an ACT palette previewed](docs/screenshot.jpg)
 
-*Browsing `ALASKA.POD` with the 256-colour VGA palette of `ART\8THR00.ACT`
-shown as a swatch grid.*
+*Browsing `CRAZY98.POD` while previwing a BIN model*
 
 ---
 
@@ -33,8 +32,6 @@ shown as a swatch grid.*
 | `POD1-64` (Extended POD1) | Community Patch 3 content | browse, preview, extract, save |
 | `POD2` | Nocturne, 4x4 Evo 1 & 2 | browse, preview, extract, explicit save/conversion, CRC, timestamp and audit history |
 | `EPD` | Fly! | browse, preview, extract |
-
-There is no POD3+ authoring.
 
 ---
 
@@ -71,6 +68,13 @@ There is no POD3+ authoring.
   selections by command or internal drag and drop while preserving case and order.
 - **Remove** deletes the selection.
 - **Replace with File** swaps one entry's data, keeping its archive name.
+- **Disable / Enable in Game** hides a track or truck from the game the way
+  CommPatch 26 does, by renaming it to an extension the engine does not recognise:
+  `.trk` becomes `.trx`, `.sit` becomes `.six`, and `.si2` becomes `.siy`. Nothing
+  is deleted and nothing is re-encoded, so enabling puts the addon back exactly as
+  it was. The item only appears for a selection that has something to rename.
+  Changing a track pod's status can trigger the multiplayer *Different Version*
+  message, which the status bar says after each rename.
 - **Validate Archive** checks limits, field capacity, unsafe and duplicate paths,
   payload ranges, RAW palette records, checksums and the expected output layout.
 - **Save / Save As** saves a named archive or writes a copy. POD1 is the default;
@@ -87,11 +91,15 @@ Double-click any entry, or use Preview from the right-click menu:
 
 | Extension | Preview |
 |---|---|
-| `.raw`, `.clr` | 8-bit paletted image decoded with the matched `.act` palette. Art textures (64x64) are drawn at 4x with no smoothing. A non-standard size opens a dialog for width, height and palette. |
+| `.raw`, `.clr` | 8-bit paletted image with a live palette selector and Save as BMP. Art textures (64x64) are drawn at 4x with no smoothing; unknown sizes open a dimensions dialog. |
 | `.act` | 16x16 colour swatch grid; hovering a swatch reports its index and hex value. |
-| `.wav` | Audio player with play, pause, stop and a millisecond position readout. |
-| `.bmp`, `.png`, `.jpg`, ... | Standard images through GDI+. |
-| `.txt`, `.def`, `.nav`, `.lvl`, `.sit`, `.lst`, `.ini`, `.cfg`, `.tex`, `.tnl`, `.ttx`, `.trk`, `.trn`, `.ndx` and other text formats | Scrollable monospaced text. |
+| `.wav` | Audio player with play, pause/resume, stop, seek bar and formatted time display. |
+| `.mod` | Standard tracker-module playback with the same transport and seeking, once the optional [MOD playback add-on](#mod-playback-add-on) is installed. |
+| `.png` | Alpha-preserving PNG preview over a transparency checkerboard. |
+| `.tga` | Uncompressed or RLE 24/32-bit true-colour Targa preview, including alpha and image-origin flags. |
+| `.bin` | Native OpenGL 3.3 model viewer with textures, normal maps, material effects, lighting/wireframe/grid controls, diagnostics and clickable texture thumbnails. An animated BIN opens on frame 1 with a banner naming the frame and where it resolved from; **Play** or the **A** key steps through the frames. |
+| `.bmp`, `.jpg`, ... | Standard images through GDI+. |
+| `.txt`, `.def`, `.nav`, `.lvl`, `.sit`, `.si2`, `.six`, `.siy`, `.trk`, `.trx`, `.txv`, `.lst`, `.ini`, `.cfg`, `.tex`, `.tnl`, `.ttx`, `.trn`, `.ndx` and other text formats | Scrollable monospaced text. |
 | anything else | Hex dump of the first 4 096 bytes. |
 
 #### Palette resolution
@@ -99,28 +107,85 @@ For `.raw` and `.clr` entries the palette is resolved in this order:
 
 1. the palette recorded in the entry's own POD directory field (see below)
 2. the same base name with an `.act` extension, in the same archive directory
-3. any other `.act` in that directory
+3. `METALCR2.ACT` anywhere in the archive
 4. `VGA.ACT` anywhere in the archive
-5. `METALCR2.ACT` anywhere in the archive (the MTM1 default)
-6. the bundled `metalcr2.act`
-7. greyscale
+5. the bundled MTM1 `metalcr2.act`
+
+The archive's own `METALCR2.ACT` outranks the bundled copy because METALCR2 is not
+one palette: CPR ships a different one from MTM1 and MTM2, so the copy the pod
+carries is the one known to match its art. A `VGA.ACT` in the pod says the archive
+belongs to one of the flight games, and since nothing at this point tells Terminal
+Velocity from Fury3 or Hellbender, that copy is the only one that can be trusted.
+
+An `.act` whose name matches nothing is never guessed at. The preview selector
+offers those last, along with the bundled CPR, Hellbender and Terminal
+Velocity/Fury3 palettes and greyscale, and none of them is ever chosen
+automatically. The last manual choice is remembered when another RAW offers the
+same option.
+
+The BIN viewer follows the same rules. Its selector supplies the fallback for
+model textures that have no same-name `.act` of their own, so it is ranked from
+the point of view of a texture that has none: another texture's palette is a
+guess, and METALCR2 is not.
 
 Step 1 is the one that matters for MTM1, Terminal Velocity, Fury3 and Hellbender.
 Their packer stored the palette each RAW was authored against in the spare bytes
 of the entry's name field, and it is not derivable from the file name: on those
-games' main archives the old step-2-onward guess picks the wrong palette for 8 221
-of 8 224 RAW entries, because it takes whichever `.ACT` happens to come first in
-the archive. MTM2, CPR and community archives carry no such record and fall
+games' main archives a name-based guess picks the wrong palette for 8 221 of 8 224
+RAW entries. MTM2, CPR and community archives carry no such record and fall
 straight through to the name-based rules. [`docs/POD_FORMAT.md`](docs/POD_FORMAT.md)
 specifies it in full.
 
 When a RAW payload is not one of the recognized sizes, the preview dialog offers
 the exact width and height pairs that match the byte count, a swap button, and
-every palette in the archive. The three common screen sizes are preselected:
+every palette in the archive. The three common screen sizes are recognized and
+opened directly:
 
 - `64000` bytes: `320 x 200`
 - `256000` bytes: `640 x 400`
 - `307200` bytes: `640 x 480`
+
+#### BIN model viewer
+
+BIN previews use a native OpenGL 3.3 context. Drag with the left mouse button to
+orbit, use the mouse wheel to zoom, the left/right arrow keys to strafe, and
+**Reset view** to refit the model. The toolbar controls textures, wireframe, grid,
+smoothing, lighting direction and background colour. Classic transparency and
+Extended BIN alpha, blend, additive, two-sided, depth-write, tint, emissive,
+specular, normal-strength and TEXSOLID material states are applied by the GPU.
+
+Textures are found in `ART`, `MODELS`, `DATA`, `TEXTURES`, then the archive root
+and title fallback, with PNG preferred over TGA and RAW. `_N.PNG` and `_N.TGA`
+normal maps use the games' DirectX/green-down convention. A same-name ACT remains
+authoritative for a RAW texture; unresolved RAW textures share the selectable
+metadata/archive/bundled fallback palette. The bottom strip reports missing or
+non-standard assets, and clicking a resolved thumbnail opens it in the normal
+image preview. The surface picks its pixel format by enumerating what the device
+actually publishes rather than by handing `ChoosePixelFormat` an ideal descriptor,
+which on a software renderer can score a plain GDI format as the closest match and
+fail several calls later with no explanation. Systems without an OpenGL 3.3-capable
+display driver show a recoverable explanation instead of closing KPod, naming the
+renderer and OpenGL version the driver reports.
+
+On a machine whose display driver publishes no usable OpenGL (ARM VMs, etc), putting a software
+implementation's `opengl32.dll`, Mesa's llvmpipe build for example, next to `KPod.exe`
+replaces the system renderer for this process. KPod loads it by explicit full path
+before its first OpenGL call, so any companion the renderer needs resolves from that
+same folder. There is nothing to install, no registry entry, and no effect on any other
+program. Nothing ships with KPod and nothing is required: with no such file present the
+system renderer is used, and the BIN preview's diagnostics line names whichever one is
+in play. It costs frame rate in exchange for working at all, which is why it is opt-in.
+
+Copy the whole renderer package, not just `opengl32.dll`. Mesa's WGL build is a loader
+that needs its companions, `libgallium_wgl.dll` among them, in the same folder, and it
+has to be the 32-bit build because KPod is a 32-bit program. A file that is present but
+cannot be loaded is reported with the reason rather than ignored.
+
+Pixel formats are enumerated through the loaded `opengl32.dll`'s own `wgl` exports when
+a drop-in renderer is in use, and through GDI otherwise. GDI's `ChoosePixelFormat`
+family answers for the system display driver, so it reports nothing usable about a
+replacement renderer's formats; presentation goes back through whichever of the two the
+format came from.
 
 ### Mount in pod.ini
 Adds the open archive to the game's `pod.ini` mount list. KPod treats 99 as the
@@ -310,17 +375,21 @@ Release builds:
 dotnet publish KPod.Windows -c Release -f net48 -p:DebugType=none
 
 # .NET 10, the alternative
-dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x64 \
+dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x86 \
   --self-contained false -p:PublishSingleFile=true -p:DebugType=none
 ```
 
 Both produce a single executable. The Framework build compiles `KPod.Core`
-straight into the exe, since .NET Framework has no single-file publish.
+straight into the exe and uses Costura.Fody 6.2.0 to embed the managed Silk.NET
+dependencies, since .NET Framework has no single-file publisher.
+
+Nothing about MOD playback is inside the executable. See
+[MOD playback add-on](#mod-playback-add-on) below.
 
 The .NET 10 publish turns on **ReadyToRun**, which compiles the app's IL to native
 code ahead of time so starting it does not have to JIT its own code first. It applies
 automatically whenever a runtime identifier is given, which the command above does,
-and it costs about 300 KB of executable size. Pass `-p:PublishReadyToRun=false` to
+and it costs about 1.7 MB of executable size. Pass `-p:PublishReadyToRun=false` to
 trade the startup back for the smaller file.
 
 Do **not** add `-p:PublishReadyToRun=true` to the net48 command. ReadyToRun is a .NET
@@ -331,27 +400,64 @@ Windows PC will run. The project fails the build with an explanation if you try.
 .NET Framework build has no ReadyToRun equivalent short of NGen, which needs an
 installer rather than an xcopy.
 
+### MOD playback add-on
+
+`.wav` playback is built in. Tracker modules need libopenmpt, which is not part of
+KPod.exe: it is a separate download, the official libopenmpt 0.8.9 release for 32-bit
+Windows. The repository ships it in [`mod-playback/`](mod-playback), which is the
+folder to zip.
+
+To install it, copy five DLLs into the folder that holds `KPod.exe`:
+
+```
+libopenmpt.dll
+openmpt-mpg123.dll
+openmpt-ogg.dll
+openmpt-vorbis.dll
+openmpt-zlib.dll
+```
+
+That is the entire installation. Nothing is written to the registry, nothing is
+copied under `%LOCALAPPDATA%`, and no network connection is used at any point.
+Deleting the five files uninstalls it.
+
+Opening a `.mod` entry is what triggers the load. KPod checks that all five files are
+beside the executable, then loads `libopenmpt.dll` by explicit full path with
+`LOAD_WITH_ALTERED_SEARCH_PATH`, which is what lets the four companions resolve out of
+that same folder and nowhere else. If a file is absent, or Windows refuses to load
+one, the audio player opens with its transport disabled and says **MOD playback is
+not installed**, naming the first missing DLL. Everything else in KPod, WAV playback
+included, is unaffected. Only a successful load is cached, so dropping the DLLs in and
+reopening the entry works without restarting KPod.
+
+The add-on carries its own licenses. When they are present beside the executable,
+**About → Third-party notices** appends them to the notices built into the exe, so
+the dialog describes what is actually installed.
+
+Keeping libopenmpt out of the executable is what took the net48 download from about
+9 MB to about 1.8 MB.
+
 ### Architectures
 
-The net48 executable is **AnyCPU**: one binary that runs on x86 and x64 Windows, as a
-64-bit process on x64. Nothing extra is needed to cover both.
+KPod is **x86**, on both target frameworks. One 32-bit binary runs on 32-bit Windows,
+on x64 under WOW64, and on ARM64 under emulation, so a single download covers every
+Windows PC. Being 32-bit is also what lets the MOD playback add-on be a single set of
+DLLs rather than three.
 
-The .NET 10 build is per-architecture, because a runtime identifier is what lets it
-be a single file and be precompiled. Publish once per target:
-
-```sh
-dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x64   --self-contained false -p:PublishSingleFile=true -p:DebugType=none
-dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x86   --self-contained false -p:PublishSingleFile=true -p:DebugType=none
-dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-arm64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none
-```
+`PlatformTarget` is set in `KPod.Windows.csproj`, so the net48 command above needs no
+extra flags. The .NET 10 build additionally needs the matching runtime identifier,
+because that is what lets it be a single file and be precompiled; `-r win-x86` is the
+only supported value and any other one fails the build.
 
 ### Writing for both targets
 
 Almost all of the code is shared, with one `#if` for WinForms startup and one for
 a folder-dialog property. Where .NET Framework lacks something, `KPod.Core/Compat`
 supplies it rather than the calling code branching: `Index`, `Range`, records
-support, path helpers, Latin-1 lookup, JSON, and Java-compatible trimming. Neither
-target pulls in a NuGet package, which is what keeps both builds to one file.
+support, path helpers, Latin-1 lookup, JSON, and Java-compatible trimming. The
+Windows project uses Silk.NET's OpenGL bindings for BIN previews; Costura embeds
+those dependencies into net48 and the .NET single-file publisher handles the
+modern builds.
 
 ### Project layout
 
@@ -359,7 +465,8 @@ target pulls in a NuGet package, which is what keeps both builds to one file.
 |---|---|---|
 | `KPod.Core` | `net48`, `net10.0` | Archive reading and writing, image and palette decoding, reports, manifests, `pod.ini`, preferences, and the folder-browser model. No Windows API, so it runs anywhere |
 | `KPod.Windows` | `net48`, `net10.0-windows` | WinForms UI, plus the Windows-only pieces under `Platform/` (MCI audio) |
-| `KPod.Tests` | `net48`, `net10.0` | xUnit tests for `KPod.Core`. 112 tests, runnable on any OS |
+| `KPod.Tests` | `net48`, `net10.0` | Portable xUnit tests for `KPod.Core` |
+| `KPod.Windows.Tests` | `net48`, `net10.0-windows` | Windows-only decoding, PCM, seeking, lifecycle and audio-UI tests, plus the add-on probe. Builds copy `mod-playback/` into the test output so the decoder tests have a libopenmpt to load |
 
 `KPod.Core` must never reference `System.Drawing` or `System.Windows.Forms`. The
 RAW decoder returns `int[]` pixels and only `KPod.Windows` turns them into a

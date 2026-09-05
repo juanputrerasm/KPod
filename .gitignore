@@ -23,6 +23,10 @@ bld/
 [Ll]og/
 [Ll]ogs/
 
+# The MOD playback add-on is a shipped download, not build output.
+!mod-playback/
+!mod-playback/*.dll
+
 # .NET Core
 project.lock.json
 project.fragment.lock.json
@@ -50,6 +54,7 @@ CodeCoverage/
 # MSTest test Results
 [Tt]est[Rr]esult*/
 [Bb]uild[Ll]og.*
+FodyWeavers.xsd
 
 # NUnit
 *.VisualState.xml

@@ -145,7 +145,7 @@ public class EntryBrowserTests
         Assert.Equal(string.Empty, browser.Rows[0].SizeText);
         Assert.Equal("Folder", browser.Rows[0].Description);
         Assert.Equal(4096.ToString("N0"), browser.Rows[1].SizeText);
-        Assert.Equal("RAW image data", browser.Rows[1].Description);
+        Assert.Equal("RAW image data (64x64)", browser.Rows[1].Description);
     }
 
     [Fact]

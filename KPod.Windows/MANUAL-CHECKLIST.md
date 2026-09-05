@@ -64,23 +64,58 @@ EPD (Fly!), and one saved by KPod itself with a name longer than 31 characters.
 
 ## Preview
 
-- [ ] A 64x64 `.raw` opens as an image at 4x with hard pixel edges, no blur.
+- [ ] A 64x64 `.raw` opens as an image at 4x with hard pixel edges, no blur. The
+      window is wide enough for the whole palette row including **Save as BMP...**,
+      and the image is centred rather than crammed into the top-left corner.
 - [ ] A 256x256 `.raw` or `.clr` opens at 1:1.
-- [ ] A `.raw` whose size is not square (try a 64 000-byte one) opens the
-      dimensions dialog with `320 x 200` preselected.
+- [ ] RAW payloads of 64 000, 256 000 and 307 200 bytes open directly at
+      `320 x 200`, `640 x 400` and `640 x 480`, respectively.
+- [ ] A non-square RAW of another size opens the dimensions dialog with an exact
+      factor pair preselected.
 - [ ] In that dialog, picking a suggested size fills width and height; **Swap**
       exchanges them; entering a width and height whose product does not match the
       payload is refused with a message rather than drawn.
 - [ ] Cancelling the dimensions dialog opens no preview window at all.
-- [ ] The palette dropdown lists the same-name ACT first when one exists, then
-      VGA, the archive's other ACTs, METALCR2, greyscale and the bundled palette.
-      Switching palette visibly changes the image.
+- [ ] Every RAW preview has a palette dropdown. Embedded POD metadata is selected
+      first when present, followed by same-name and same-directory ACTs; archive
+      palettes, bundled MTM1/CPR/Hellbender/TV-F3 palettes and greyscale are all
+      available. Switching palette visibly changes the image.
+- [ ] **Save as BMP** writes the original image dimensions and currently selected
+      palette, not the enlarged 64x64 display bitmap.
 - [ ] An `.act` opens as a 16x16 swatch grid, and hovering a swatch shows
       `Index n - #RRGGBB`.
 - [ ] A `.txt`, `.sit` or `.trk` opens in the monospaced text view, scrolled to
       the top.
-- [ ] A `.bmp` or `.png` opens as an image.
-- [ ] A `.bin` or other binary opens as a hex dump, 16 bytes per line with the
+- [ ] A `.bmp` opens as an image; a `.png` with transparency renders over a
+      checkerboard; malformed PNG data reports an image error instead of hex.
+- [ ] Uncompressed and RLE `.tga` files open with the correct orientation and
+      alpha; unsupported or truncated TGA data reports a useful error.
+- [ ] A `.bin` opens the native model viewer. Left-drag orbits, the wheel zooms,
+      left/right arrows strafe, **Reset view** refits it, and resizing preserves
+      the view with sensible near/far clipping.
+- [ ] BIN texture, wireframe, grid, smoothing and lighting toggles work; every
+      light direction and a custom background colour render immediately.
+- [ ] Classic transparent, animated, multi-texture and Extended BIN fixtures
+      render their alpha-test, blend/additive, two-sided, depth-write, tint,
+      emissive, specular, normal-map and TEXSOLID states correctly.
+- [ ] A BIN preview renders the model the right way up and the right way round, at a
+      size that fits the window, matching what JSPod shows for the same entry.
+      **Reset view** reframes it and **Background...** repaints it in the chosen colour. A machine with no OpenGL 3.3 driver instead shows a readable
+      explanation naming the renderer and version, and KPod stays usable.
+- [ ] Dropping a software `opengl32.dll` next to `KPod.exe` makes the BIN preview
+      work on such a machine, and removing it returns the explanation. With no such
+      file present nothing about the preview changes.
+- [ ] BIN textures resolve PNG before TGA before RAW through ART, MODELS, DATA,
+      TEXTURES, root and title fallback. `_N.PNG` wins over `_N.TGA` and appears
+      with the DirectX/green-down orientation.
+- [ ] BIN RAW textures use a same-name ACT authoritatively. When one is absent,
+      the palette selector changes the affected model textures and thumbnails;
+      metadata, bundled and remaining archive ACT choices are offered.
+- [ ] The BIN footer shows statistics and parser/texture warnings. Missing assets
+      get placeholders; clicking a resolved thumbnail opens its image preview.
+- [ ] On a machine without OpenGL 3.3 support, opening a BIN reports the driver
+      requirement inside a recoverable viewer rather than crashing KPod.
+- [ ] Another unrecognized binary opens as a hex dump, 16 bytes per line with the
       ASCII gutter, capped at 4 096 bytes and saying so in the first line.
 - [ ] Pressing Enter on a selected file opens the same preview as double-clicking.
 
@@ -88,7 +123,8 @@ EPD (Fly!), and one saved by KPod itself with a name longer than 31 characters.
 
 - [ ] A `.wav` opens the audio player directly; no empty preview window flashes
       first.
-- [ ] **Play** starts playback and the position readout counts up.
+- [ ] **Play** starts playback and the formatted elapsed/total time counts up;
+      dragging the seek bar changes position while stopped, playing or paused.
 - [ ] **Pause** stops the audio and the readout freezes; the button becomes
       **Resume** and pressing it continues from the same position.
 - [ ] **Stop** halts playback and returns the position to zero.
@@ -96,6 +132,24 @@ EPD (Fly!), and one saved by KPod itself with a name longer than 31 characters.
 - [ ] `%TEMP%` holds no leftover `kpodwave*.wav` after the player is closed.
 - [ ] A malformed or non-PCM WAV shows "Cannot play this audio file" and leaves
       the transport buttons disabled instead of throwing.
+- [ ] With no add-on installed, opening a `.mod` says "MOD playback is not
+      installed", names the first missing DLL, and leaves the transport disabled.
+      The rest of KPod, WAV playback included, keeps working.
+- [ ] Copying the five `mod-playback` DLLs next to `KPod.exe` enables MOD playback
+      with no restart, and deleting them again returns the not-installed warning.
+- [ ] Deleting any one of the five, or replacing `libopenmpt.dll` with the 64-bit
+      release, gives the same not-installed warning rather than a crash.
+- [ ] With the add-on installed, a six-channel `.mod` initializes, produces
+      non-silent audio, reports a plausible duration and plays once without looping.
+- [ ] MOD pause/resume, stop, seeking and natural end-of-song update the shared
+      transport correctly. Repeatedly opening and closing a MOD leaves no audio
+      playing and does not crash or leak playback threads and waveOut handles.
+- [ ] A malformed `.mod` reports a useful error and leaves the transport disabled.
+- [ ] Nothing is written beneath `%LOCALAPPDATA%\KPod\native`, and playing a MOD
+      needs no network connection.
+- [ ] **About → Third-party notices** shows the Silk.NET, Costura and Fody notices
+      on their own, and additionally the libopenmpt and codec licenses when the
+      add-on's `License.*.txt` files sit beside `KPod.exe`.
 
 ## Editing
 

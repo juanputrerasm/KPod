@@ -124,6 +124,16 @@ public static class RawImageDecoder
     /// </summary>
     public static (int Width, int Height)? DetectDimensions(int byteCount)
     {
+        switch (byteCount)
+        {
+            case 64000:
+                return (320, 200);
+            case 256000:
+                return (640, 400);
+            case 307200:
+                return (640, 480);
+        }
+
         if (byteCount == ArtTextureSide * ArtTextureSide)
         {
             return (ArtTextureSide, ArtTextureSide);
@@ -217,6 +227,12 @@ public static class RawImageDecoder
     [
         ".TXT", ".DEF", ".NAV", ".TDF", ".TEX", ".LVL", ".INI", ".LST", ".INF",
         ".CFG", ".VOX", ".SIT", ".TRN", ".NDX", ".TNL", ".TTX", ".TRK",
+        ".MIC", ".JSON", ".CRS", ".DVP", ".GLT", ".PIT", ".LVO", ".LOC",
+        ".DMO", ".LOG", ".CMD", ".CAR", ".200", ".400", ".480", ".ANI",
+        ".KLP", ".SET", ".TTY", ".SI2", ".TXV",
+        // Disabled tracks and trucks keep their original text payload; only the
+        // extension changes, so they stay readable in the preview.
+        ".SIX", ".SIY", ".TRX",
     ];
 
     /// <summary>

@@ -12,6 +12,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- No app.config needed; the manifest carries everything. -->
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>false</GenerateBindingRedirectsOutputType>
   </PropertyGroup>
 
   <!-- Compile the app's IL to native ahead of time so starting it does not have to
@@ -30,7 +32,7 @@
        instead. -->
   <Target Name="RejectReadyToRunOnNetFramework" BeforeTargets="PrepareForBuild"
           Condition="'$(TargetFramework)' == 'net48' And '$(PublishReadyToRun)' == 'true'">
-    <Error Text="PublishReadyToRun does nothing for the net48 build and makes the SDK infer a runtime identifier from this machine, producing a binary for the wrong architecture. Drop -p:PublishReadyToRun=true from the net48 publish; the net48 output is AnyCPU and already runs on x86 and x64. The .NET 10 publish enables ReadyToRun on its own." />
+    <Error Text="PublishReadyToRun does nothing for the net48 build and makes the SDK infer a runtime identifier from this machine, producing a binary for the wrong architecture. Drop -p:PublishReadyToRun=true from the net48 publish; the net48 output is x86 and runs on every 32-bit and 64-bit Windows. The .NET 10 publish enables ReadyToRun on its own." />
   </Target>
 
   <PropertyGroup>
@@ -46,7 +48,18 @@
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationIcon>Assets\KPod.ico</ApplicationIcon>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- 32-bit, because the optional MOD playback add-on is the 32-bit libopenmpt and a
+         64-bit process cannot load it. An AnyCPU net48 build would silently run as x64
+         on every modern PC and never find a usable libopenmpt. -->
+    <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
+    <PackageReference Include="Costura.Fody" Version="6.2.0" PrivateAssets="all"
+                      Condition="'$(TargetFramework)' == 'net48'" />
+  </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' != 'net48'">
     <ProjectReference Include="..\KPod.Core\KPod.Core.csproj" />
@@ -66,6 +79,11 @@
     <!-- ApplicationIcon covers Explorer and the taskbar; forms need the icon at
          runtime, so it is embedded as well. -->
     <EmbeddedResource Include="Assets\KPod.ico" />
+    <!-- Notices for what is actually inside the exe. libopenmpt and its codecs are an
+         optional add-on now, so their licenses ship in mod-playback/ beside the DLLs
+         instead of adding 60 KB to every download. -->
+    <EmbeddedResource Include="Assets\Licenses\ThirdPartyNotices.txt"
+                      LogicalName="KPod.Windows.Licenses.ThirdPartyNotices.txt" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
