@@ -131,4 +131,37 @@ public class RawImageDecoderTests
         Assert.Equal(256, palette.Length);
         Assert.NotEqual(RawImageDecoder.GreyscalePalette(), palette);
     }
+
+    /// <summary>
+    /// A 4x4 Evolution .OPA is a real 0..255 gradient, not a mask, so every level has to
+    /// survive into the alpha channel; reducing it to a key hardens soft foliage edges.
+    /// </summary>
+    [Fact]
+    public void OpacityPlaneReachesTheAlphaChannelIntact()
+    {
+        DecodedImage image = new(2, 2, [unchecked((int)0xFF102030), unchecked((int)0xFF405060),
+            unchecked((int)0xFF708090), unchecked((int)0xFFA0B0C0)]);
+
+        DecodedImage merged = RawImageDecoder.ApplyOpacityPlane(image, [0x00, 0x7F, 0x80, 0xFF]);
+
+        Assert.Equal(0x00, (merged.Pixels[0] >> 24) & 0xFF);
+        Assert.Equal(0x7F, (merged.Pixels[1] >> 24) & 0xFF);
+        Assert.Equal(0x80, (merged.Pixels[2] >> 24) & 0xFF);
+        Assert.Equal(0xFF, (merged.Pixels[3] >> 24) & 0xFF);
+        // Colour is untouched: only the alpha byte is replaced.
+        Assert.Equal(0x102030, merged.Pixels[0] & 0x00FFFFFF);
+    }
+
+    /// <summary>
+    /// A plane whose length does not match the image means the stem pairing found the wrong
+    /// file, not that the plane needs resampling, so it is ignored rather than stretched.
+    /// </summary>
+    [Fact]
+    public void AMismatchedOpacityPlaneIsIgnored()
+    {
+        DecodedImage image = new(2, 2, [-1, -1, -1, -1]);
+
+        Assert.Same(image, RawImageDecoder.ApplyOpacityPlane(image, [0x10, 0x20]));
+        Assert.Same(image, RawImageDecoder.ApplyOpacityPlane(image, null));
+    }
 }

@@ -122,6 +122,32 @@ public static class RawImageDecoder
     /// Infers image dimensions from the file size, or returns null when the size
     /// is not one this decoder recognizes.
     /// </summary>
+    /// <summary>
+    /// Merges a 4x4 Evolution .OPA opacity plane into a decoded image's alpha channel.
+    ///
+    /// <para>An .OPA is an unheadered byte per pixel, paired with its texture by stem, and it
+    /// holds a real gradient rather than a mask - AS3PINE1.OPA uses all 256 levels. That is
+    /// the difference from the MTM family, which has no alpha anywhere and cuts texels by
+    /// colour key instead; routing an .OPA through that path hardens every soft foliage edge
+    /// into a stencil.</para>
+    ///
+    /// <para>A plane whose length does not match the image's pixel count means the pairing
+    /// was wrong rather than that the plane needs resampling, so it is ignored.</para>
+    /// </summary>
+    public static DecodedImage ApplyOpacityPlane(DecodedImage image, byte[]? opacityBytes)
+    {
+        if (opacityBytes is null) return image;
+        int pixels = image.Width * image.Height;
+        if (opacityBytes.Length != pixels) return image;
+
+        int[] merged = new int[image.Pixels.Length];
+        for (int i = 0; i < pixels; i++)
+        {
+            merged[i] = (image.Pixels[i] & 0x00FFFFFF) | (opacityBytes[i] << 24);
+        }
+        return new DecodedImage(image.Width, image.Height, merged);
+    }
+
     public static (int Width, int Height)? DetectDimensions(int byteCount)
     {
         switch (byteCount)

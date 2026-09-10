@@ -244,8 +244,19 @@ public static class PodArchiveReader
             throw new PodFormatException("Suspicious POD2 item count: " + itemCount);
         }
 
+        /*
+          The audit trail is a different quantity from the directory - one record per edit
+          over the archive's lifetime - so it legitimately outnumbers the entries, and the
+          entry-count heuristic is the wrong bound for it. 4x4 Evolution 2's shipping
+          TRUCK.POD carries 8,430 audit records for 1,126 entries, and every stock Evo
+          archive has more records than entries.
+
+          What the count has to satisfy is that the records fit in the file at all. Where
+          they actually sit is checked against the end of the payloads once the directory
+          has been read.
+        */
         int auditCount = ReadInt32Le(head, Pod2AuditCountOffset);
-        if (auditCount is < 0 or > MaxReasonableItems)
+        if (auditCount < 0 || (long)auditCount * Pod2AuditSize > source.Length)
         {
             throw new PodFormatException("Suspicious POD2 audit count: " + auditCount);
         }
@@ -334,7 +345,7 @@ public static class PodArchiveReader
             return audits;
         }
 
-        byte[] records = source.ReadExact(auditOffset, auditCount * Pod2AuditSize);
+        byte[] records = source.ReadExact(auditOffset, checked(auditCount * Pod2AuditSize));
         for (int i = 0; i < auditCount; i++)
         {
             int at = i * Pod2AuditSize;

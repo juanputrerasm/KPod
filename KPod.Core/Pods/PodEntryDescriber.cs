@@ -52,7 +52,14 @@ public static class PodEntryDescriber
             "ra3" => "Ground box height layer 3",
             "ra4" => "Ground box height layer 4",
             "ra5" => "Ground box height layer 5",
+            "opa" => OpacityDescription(byteCount),
             "raw" => HdArtMaps.Annotate(RawDescription(byteCount), name),
+            "rtd" => "4x4 Evo terrain auxiliary grid",
+            "smf" => "3D model file (4x4 Evo C3DModel)",
+            "tif" or "tiff" => "TIFF image",
+            "veg" => "4x4 Evo vegetation placement",
+            "wat" => "4x4 Evo water material",
+            "sdw" => "4x4 Evo shadow overlay grid",
             "sit" => "Track situation file",
             "si2" => "Track situation file (CommPatch 3+ engine)",
             "six" => "Track situation file (disabled)",
@@ -93,6 +100,18 @@ public static class PodEntryDescriber
             "ini" or "cfg" => "Configuration file",
             _ => ext.Length == 0 ? "Binary data" : ext.ToUpperInvariant() + " file",
         };
+    }
+
+    /// <summary>
+    /// An .OPA is an unheadered byte per pixel like a .RAW, so its side length is worth the
+    /// same read-out; without it a 65,536-byte opacity plane says nothing about its size.
+    /// </summary>
+    private static string OpacityDescription(int byteCount)
+    {
+        (int Width, int Height)? dims = RawImageDecoder.DetectDimensions(byteCount);
+        return dims is null
+            ? "Opacity plane (non-standard size)"
+            : "Opacity plane (" + dims.Value.Width + "x" + dims.Value.Height + ")";
     }
 
     private static string RawDescription(int byteCount)

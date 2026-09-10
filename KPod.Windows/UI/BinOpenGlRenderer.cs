@@ -66,14 +66,25 @@ internal sealed unsafe class BinOpenGlRenderer : IDisposable
                 textureMap[BinTextureResolver.Stem(texture.Name)] = texture;
             }
 
+            /*
+              .BIN is authored Z-up and is swapped into view space; a 4x4 Evolution .SMF is
+              already Y-up and must be left alone. Its texture V likewise runs top-down,
+              which is the opposite of what the .BIN upload flip assumes. The model states
+              both, so neither is inferred here.
+            */
+            bool swapAxes = !string.Equals(frame.Model.UpAxis, "Y", StringComparison.Ordinal);
+            bool flipTexture = !string.Equals(frame.Model.UvOrigin, "top-left", StringComparison.Ordinal);
+
             List<GpuMesh> meshes = [];
             foreach (BinMesh mesh in frame.Model.Meshes)
             {
                 textureMap.TryGetValue(BinTextureResolver.Stem(mesh.TextureName), out LoadedBinTexture? texture);
-                meshes.Add(UploadMesh(mesh, texture, smooth));
+                meshes.Add(UploadMesh(mesh, texture, smooth, swapAxes, flipTexture));
                 for (int i = 0; i + 2 < mesh.Positions.Count; i += 3)
                 {
-                    Vector3 point = new(mesh.Positions[i], mesh.Positions[i + 2], -mesh.Positions[i + 1]);
+                    Vector3 point = swapAxes
+                        ? new Vector3(mesh.Positions[i], mesh.Positions[i + 2], -mesh.Positions[i + 1])
+                        : new Vector3(mesh.Positions[i], mesh.Positions[i + 1], mesh.Positions[i + 2]);
                     minimum = Vector3.Min(minimum, point);
                     maximum = Vector3.Max(maximum, point);
                 }
@@ -202,7 +213,13 @@ internal sealed unsafe class BinOpenGlRenderer : IDisposable
     {
         BinMaterial? material = mesh.Source.Material;
         uint flags = material?.Flags ?? 0;
-        bool alphaTest = solidPass || (material is not null ? (flags & 0x0008) != 0 : mesh.Source.Transparent);
+        /*
+          An .SMF states transparency two ways and its material flag is the weaker one: every
+          stock Evo vegetation model writes that flag as 0 while naming a two-sample .TIF
+          whose second sample is opacity. An alpha channel in the art is the material intent.
+        */
+        bool alphaTest = solidPass
+            || (material is not null ? (flags & 0x0008) != 0 : mesh.Source.Transparent || mesh.HasTextureAlpha);
         bool blend = !solidPass && material is not null && (flags & 0x0004) != 0 && !alphaTest;
         bool additive = !solidPass && (flags & 0x0010) != 0;
         if (blend || additive)
@@ -212,7 +229,10 @@ internal sealed unsafe class BinOpenGlRenderer : IDisposable
         }
         else _gl.Disable(EnableCap.Blend);
         _gl.DepthMask(solidPass || alphaTest || (flags & 0x0100) == 0);
-        if ((flags & 0x0080) != 0) _gl.Disable(EnableCap.CullFace); else _gl.Enable(EnableCap.CullFace);
+        // .SMF sheets are single-sided quads meant to be seen from behind, so the decoder
+        // marks them double-sided; .BIN relies on its material's TWOSIDED flag instead.
+        if (mesh.Source.DoubleSided || (flags & 0x0080) != 0) _gl.Disable(EnableCap.CullFace);
+        else _gl.Enable(EnableCap.CullFace);
 
         bool useTexture = options.Textures && mesh.Diffuse != 0;
         bool useNormal = useTexture && options.Lighting && mesh.Normal != 0;
@@ -241,15 +261,24 @@ internal sealed unsafe class BinOpenGlRenderer : IDisposable
         _gl.Disable(EnableCap.Blend); _gl.Enable(EnableCap.CullFace); _gl.DepthMask(true);
     }
 
-    private GpuMesh UploadMesh(BinMesh source, LoadedBinTexture? texture, bool smooth)
+    private GpuMesh UploadMesh(BinMesh source, LoadedBinTexture? texture, bool smooth,
+        bool swapAxes, bool flipTexture)
     {
         int vertices = source.Positions.Count / 3;
         float[] interleaved = new float[vertices * 8];
         for (int i = 0; i < vertices; i++)
         {
             int p = i * 3, o = i * 8, uv = i * 2;
-            interleaved[o] = source.Positions[p]; interleaved[o + 1] = source.Positions[p + 2]; interleaved[o + 2] = -source.Positions[p + 1];
-            interleaved[o + 3] = source.Normals[p]; interleaved[o + 4] = source.Normals[p + 2]; interleaved[o + 5] = -source.Normals[p + 1];
+            if (swapAxes)
+            {
+                interleaved[o] = source.Positions[p]; interleaved[o + 1] = source.Positions[p + 2]; interleaved[o + 2] = -source.Positions[p + 1];
+                interleaved[o + 3] = source.Normals[p]; interleaved[o + 4] = source.Normals[p + 2]; interleaved[o + 5] = -source.Normals[p + 1];
+            }
+            else
+            {
+                interleaved[o] = source.Positions[p]; interleaved[o + 1] = source.Positions[p + 1]; interleaved[o + 2] = source.Positions[p + 2];
+                interleaved[o + 3] = source.Normals[p]; interleaved[o + 4] = source.Normals[p + 1]; interleaved[o + 5] = source.Normals[p + 2];
+            }
             interleaved[o + 6] = SnapUv(source.TextureCoordinates[uv], texture?.Diffuse?.Width);
             interleaved[o + 7] = SnapUv(source.TextureCoordinates[uv + 1], texture?.Diffuse?.Height);
         }
@@ -262,14 +291,20 @@ internal sealed unsafe class BinOpenGlRenderer : IDisposable
         _gl.EnableVertexAttribArray(1); _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, stride, (void*)(3 * sizeof(float)));
         _gl.EnableVertexAttribArray(2); _gl.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, stride, (void*)(6 * sizeof(float)));
         return new GpuMesh(source, vao, vbo, vertices,
-            texture?.Diffuse is null ? 0 : UploadTexture(texture.Diffuse, smooth),
-            texture?.Normal is null ? 0 : UploadTexture(texture.Normal, smooth), texture?.IsRaw == true);
+            texture?.Diffuse is null ? 0 : UploadTexture(texture.Diffuse, smooth, flipTexture),
+            texture?.Normal is null ? 0 : UploadTexture(texture.Normal, smooth, flipTexture),
+            // A .RAW that has had an .OPA merged into it carries real alpha, so it must not
+            // also be run through the colour-key cutout the MTM family needs.
+            texture?.IsRaw == true && texture?.HasAlpha != true)
+        {
+            HasTextureAlpha = texture?.HasAlpha == true,
+        };
     }
 
-    private uint UploadTexture(Bitmap bitmap, bool smooth)
+    private uint UploadTexture(Bitmap bitmap, bool smooth, bool flipY = true)
     {
         using Bitmap argb = bitmap.PixelFormat == System.Drawing.Imaging.PixelFormat.Format32bppArgb ? new Bitmap(bitmap) : bitmap.Clone(new Rectangle(0, 0, bitmap.Width, bitmap.Height), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-        argb.RotateFlip(RotateFlipType.RotateNoneFlipY);
+        if (flipY) argb.RotateFlip(RotateFlipType.RotateNoneFlipY);
         BitmapData bits = argb.LockBits(new Rectangle(0, 0, argb.Width, argb.Height), ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         try
         {
@@ -385,7 +420,11 @@ internal sealed unsafe class BinOpenGlRenderer : IDisposable
         if (_program != 0) _gl.DeleteProgram(_program);
     }
 
-    private sealed record GpuMesh(BinMesh Source, uint Vao, uint Vbo, int VertexCount, uint Diffuse, uint Normal, bool IsRaw);
+    private sealed record GpuMesh(BinMesh Source, uint Vao, uint Vbo, int VertexCount, uint Diffuse, uint Normal, bool IsRaw)
+    {
+        /// <summary>Whether the resolved art carries its own alpha channel.</summary>
+        public bool HasTextureAlpha { get; init; }
+    }
 
     private const string VertexShader = @"#version 330 core
 layout(location=0) in vec3 aPosition;

@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using KPod.Core.Compat;
 using KPod.Core.Images;
+using KPod.Core.Models;
 using KPod.Core.Pods;
 
 namespace KPod.Windows.UI;
@@ -61,7 +62,12 @@ internal sealed class PreviewForm : Form
             return;
         }
 
-        if (entryName.EndsWith(".BIN", StringComparison.OrdinalIgnoreCase))
+        // .SMF is 4x4 Evolution's model format and opens in the same viewer. The magic is
+        // checked too, so an entry whose extension is missing or wrong still opens as the
+        // model it is rather than falling through to a hex dump.
+        if (entryName.EndsWith(".BIN", StringComparison.OrdinalIgnoreCase)
+            || entryName.EndsWith(".SMF", StringComparison.OrdinalIgnoreCase)
+            || SmfModelDecoder.IsSmfModel(data))
         {
             using BinPreviewForm viewer = new(entryName, data, archive);
             viewer.ShowDialog(owner);

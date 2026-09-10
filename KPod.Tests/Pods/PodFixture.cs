@@ -56,7 +56,14 @@ public static class PodFixture
         return output.ToArray();
     }
 
-    public static byte[] BuildPod2(params PodFile[] files)
+    public static byte[] BuildPod2(params PodFile[] files) => BuildPod2(0, files);
+
+    /// <summary>
+    /// Builds a POD2 archive carrying <paramref name="auditCount"/> audit records after the
+    /// payloads, which is where a real archive keeps them. Shipping archives accumulate one
+    /// record per edit, so the trail routinely outnumbers the directory.
+    /// </summary>
+    public static byte[] BuildPod2(int auditCount, params PodFile[] files)
     {
         const int headerSize = 96;
         const int entrySize = 20;
@@ -81,7 +88,7 @@ public static class PodFixture
         WriteInt32(output, 0);                            // checksum, ignored by the reader
         Write(output, FixedField("fixture", 80));         // comment
         WriteInt32(output, files.Length);
-        WriteInt32(output, 0);                            // audit count, ignored by the reader
+        WriteInt32(output, auditCount);
 
         int offset = dataOffset;
         for (int i = 0; i < files.Length; i++)
@@ -98,6 +105,20 @@ public static class PodFixture
         foreach (PodFile file in files)
         {
             Write(output, file.Bytes);
+        }
+
+        // The trail sits after the payloads. Each record is 312 bytes: a 32-byte user, a
+        // timestamp, an action (0-2), a 256-byte path and four trailing words.
+        for (int i = 0; i < auditCount; i++)
+        {
+            Write(output, FixedField("fixture", 32));
+            WriteInt32(output, 0);                        // timestamp
+            WriteInt32(output, i % 3);                    // action
+            Write(output, FixedField("ART\\TEST.RAW", 256));
+            WriteInt32(output, 0);
+            WriteInt32(output, 0);
+            WriteInt32(output, 0);
+            WriteInt32(output, 0);
         }
 
         return output.ToArray();

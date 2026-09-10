@@ -41,6 +41,40 @@ public class PodArchiveReaderTests
     }
 
     [Fact]
+    public void ReadsPod2WhenTheAuditTrailOutnumbersTheDirectory()
+    {
+        // The shape of a shipping archive: 4x4 Evolution 2's TRUCK.POD holds 8,430 audit
+        // records for 1,126 entries. Bounding the trail by the entry-count heuristic used to
+        // reject it outright.
+        const int auditCount = PodArchiveReader.MaxReasonableItems + 238;
+        using TempDir temp = new();
+        string path = temp.WriteFile("busy.pod", PodFixture.BuildPod2(
+            auditCount,
+            PodFile.Text("TRUCK/CBT4.TRK", "version\n7\n"),
+            PodFile.Text("MODELS/TRAILBLAZER.SMF", "C3DModel\n")));
+
+        using PodArchive archive = PodArchiveReader.Read(path);
+
+        Assert.Equal(PodFormat.Pod2, archive.Format);
+        Assert.Equal(["TRUCK/CBT4.TRK", "MODELS/TRAILBLAZER.SMF"], archive.Entries.Select(e => e.Name));
+        Assert.Equal(auditCount, archive.AuditEntries.Count);
+    }
+
+    [Fact]
+    public void RejectsPod2AuditCountThatCannotFitInTheFile()
+    {
+        using TempDir temp = new();
+        byte[] bytes = PodFixture.BuildPod2(PodFile.Text("TRUCK/CBT4.TRK", "version\n7\n"));
+        // 312 bytes per record, so this claims far more trail than the file could hold.
+        WriteInt32Le(bytes, 92, 1_000_000);
+        string path = temp.WriteFile("liar.pod", bytes);
+
+        PodFormatException error = Assert.Throws<PodFormatException>(() => PodArchiveReader.Read(path));
+
+        Assert.Contains("audit count", error.Message);
+    }
+
+    [Fact]
     public void EpdJoinsUppercasePrefixWithBackslashSuffix()
     {
         using TempDir temp = new();
@@ -100,5 +134,13 @@ public class PodArchiveReaderTests
         Assert.NotNull(archive.FindEntryByTitle("DEMO1.ACT"));
         Assert.Equal("DEMO1.RAW", archive.Entries[0].Title);
         Assert.Single(archive.GetEntriesByExtension(".act"));
+    }
+
+    private static void WriteInt32Le(byte[] bytes, int offset, int value)
+    {
+        bytes[offset] = (byte)value;
+        bytes[offset + 1] = (byte)(value >> 8);
+        bytes[offset + 2] = (byte)(value >> 16);
+        bytes[offset + 3] = (byte)(value >> 24);
     }
 }

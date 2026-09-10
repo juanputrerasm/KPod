@@ -61,7 +61,14 @@ internal sealed class BinPreviewForm : Form
     {
         _entryName = entryName;
         _archive = archive;
-        _animation = BinModelDecoder.Decode(data, entryName);
+        /*
+          .SMF is 4x4 Evolution's static model format and shares nothing with .BIN but the
+          job. It is detected by its "C3DModel" magic rather than by extension, so a
+          mis-named entry still opens and a .BIN is never handed to the text parser.
+        */
+        _animation = SmfModelDecoder.IsSmfModel(data)
+            ? SmfModelDecoder.Decode(data, entryName)
+            : BinModelDecoder.Decode(data, entryName);
         _frames = BinFrameResolver.Resolve(archive, _animation);
         // An animated BIN carries no geometry of its own, so there is nothing to show
         // until its frames are loaded. C-POD opens on frame 1 and says so, and this
@@ -69,7 +76,7 @@ internal sealed class BinPreviewForm : Form
         _frameModels = _frames.Count > 0
             ? [.. Enumerable.Range(0, _frames.Count).Select(index => LoadFrame(index) ?? _animation)]
             : [_animation];
-        Text = "BIN Preview - " + entryName;
+        Text = (_animation.Format.StartsWith("SMF", StringComparison.Ordinal) ? "SMF Preview - " : "BIN Preview - ") + entryName;
         Icon = AppIcon.Shared;
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -144,7 +151,10 @@ internal sealed class BinPreviewForm : Form
         if (entry is null) return null;
         try
         {
-            return BinModelDecoder.Decode(_archive.GetEntryBytes(entry), entry.Name);
+            byte[] bytes = _archive.GetEntryBytes(entry);
+            return SmfModelDecoder.IsSmfModel(bytes)
+                ? SmfModelDecoder.Decode(bytes, entry.Name)
+                : BinModelDecoder.Decode(bytes, entry.Name);
         }
         catch (Exception ex) when (ex is IOException or PodFormatException)
         {

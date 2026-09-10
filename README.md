@@ -98,9 +98,31 @@ Double-click any entry, or use Preview from the right-click menu:
 | `.png` | Alpha-preserving PNG preview over a transparency checkerboard. |
 | `.tga` | Uncompressed or RLE 24/32-bit true-colour Targa preview, including alpha and image-origin flags. |
 | `.bin` | Native OpenGL 3.3 model viewer with textures, normal maps, material effects, lighting/wireframe/grid controls, diagnostics and clickable texture thumbnails. An animated BIN opens on frame 1 with a banner naming the frame and where it resolved from; **Play** or the **A** key steps through the frames. |
+| `.smf` | 4x4 Evolution 1 and 2 models, in the same viewer. |
+| `.tif` | 4x4 Evolution 2 palette-indexed TIFF, including the second sample it uses as an opacity plane. |
 | `.bmp`, `.jpg`, ... | Standard images through GDI+. |
-| `.txt`, `.def`, `.nav`, `.lvl`, `.sit`, `.si2`, `.six`, `.siy`, `.trk`, `.trx`, `.txv`, `.lst`, `.ini`, `.cfg`, `.tex`, `.tnl`, `.ttx`, `.trn`, `.ndx` and other text formats | Scrollable monospaced text. |
+| `.txt`, `.def`, `.nav`, `.lvl`, `.sit`, `.si2`, `.six`, `.siy`, `.trk`, `.trx`, `.txv`, `.lst`, `.ini`, `.cfg`, `.tex`, `.tnl`, `.ttx`, `.trn`, `.ndx`, `.veg`, `.wat` and other text formats | Scrollable monospaced text. |
 | anything else | Hex dump of the first 4 096 bytes. |
+
+#### 4x4 Evolution models
+
+`.smf` is 4x4 Evolution's static model format, a text `C3DModel` covering versions 2
+to 4 including Evo 2's `v1` bump materials. It opens in the same viewer as `.bin`,
+and is recognised by its magic rather than its extension, so an entry whose name is
+missing or wrong still opens as the model it is.
+
+Two things differ from `.bin` and travel on the model rather than being assumed by
+the renderer. Evo geometry is Y-up where `.bin` is Z-up, so its axes are not swapped
+into view space; and Evo's texture V runs top-down, so its art is uploaded without
+the vertical flip `.bin` art needs. Its groups are drawn double-sided, because Evo's
+foliage, fences and banners are single-sided sheets meant to be seen from behind.
+
+Diffuse textures resolve `.png`, `.tga`, `.tif`, then `.raw`. An Evo `.raw` also
+picks up its same-stem `.opa` opacity plane, which is a real 0-255 gradient rather
+than a mask, so it is merged into the alpha channel instead of being reduced to the
+colour key the MTM family needs; art that carries its own alpha is alpha-tested on
+that channel and never colour-keyed. Reduced-detail LOD groups are hidden when a
+model carries its full-detail pair, and kept when they are all it has.
 
 #### Palette resolution
 For `.raw` and `.clr` entries the palette is resolved in this order:
@@ -155,7 +177,7 @@ Extended BIN alpha, blend, additive, two-sided, depth-write, tint, emissive,
 specular, normal-strength and TEXSOLID material states are applied by the GPU.
 
 Textures are found in `ART`, `MODELS`, `DATA`, `TEXTURES`, then the archive root
-and title fallback, with PNG preferred over TGA and RAW. `_N.PNG` and `_N.TGA`
+and title fallback, with PNG preferred over TGA, TIF and RAW. `_N.PNG` and `_N.TGA`
 normal maps use the games' DirectX/green-down convention. A same-name ACT remains
 authoritative for a RAW texture; unresolved RAW textures share the selectable
 metadata/archive/bundled fallback palette. The bottom strip reports missing or
