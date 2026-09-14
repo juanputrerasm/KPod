@@ -22,33 +22,75 @@ public class SmfModelDecoderTests
         Assert.Empty(model.Warnings);
     }
 
-    /// <summary>
-    /// Evo geometry is Y-up and its texture V runs top-down. Both travel on the model
-    /// because the renderer swaps .BIN axes and flips .BIN art, and doing either to an .SMF
-    /// lays the model on its side or turns its texture upside down.
-    /// </summary>
     [Fact]
-    public void ReportsEvoAxisAndTextureConventions()
+    public void GroupsAreDrawnFromBothSides()
     {
         BinModel model = SmfModelDecoder.Decode(Build(4, Quad("OPAQUE", "WALL.RAW")), "WALL.SMF");
 
-        Assert.Equal("Y", model.UpAxis);
-        Assert.Equal("top-left", model.UvOrigin);
         Assert.True(Assert.Single(model.Meshes).DoubleSided);
     }
 
-    /// <summary>Vertices are carried through unchanged: no axis swap, no V flip.</summary>
+    /// <summary>
+    /// Evo is Y-up and .BIN is Z-up, so Y and Z are swapped into the .BIN convention and the
+    /// normals are negated with them, matching JSTruckViewer's reference parser.
+    /// </summary>
     [Fact]
-    public void CarriesVerticesAndTextureCoordinatesVerbatim()
+    public void SwapsEvoAxesIntoTheBinConvention()
     {
         BinModel model = SmfModelDecoder.Decode(Build(4, Quad("OPAQUE", "WALL.RAW")), "WALL.SMF");
         BinMesh mesh = Assert.Single(model.Meshes);
 
-        // First corner of the first face is vertex 0: (0, 10, 0) with V of 0.25.
+        // Vertex 0 is Evo (0, 10, 0) with normal (0, 0, 1); the first face corner is it.
         Assert.Equal(0f, mesh.Positions[0]);
-        Assert.Equal(10f, mesh.Positions[1]);
-        Assert.Equal(0f, mesh.Positions[2]);
-        Assert.Equal(0.25f, mesh.TextureCoordinates[1]);
+        Assert.Equal(0f, mesh.Positions[1]);     // Evo Z
+        Assert.Equal(10f, mesh.Positions[2]);    // Evo Y
+        Assert.Equal(0f, mesh.Normals[0]);
+        Assert.Equal(-1f, mesh.Normals[1]);      // -(Evo nz)
+        Assert.Equal(0f, mesh.Normals[2]);       // -(Evo ny)
+    }
+
+    /// <summary>
+    /// Evo's V runs top-down and the renderer uploads every texture flipped, so V is
+    /// inverted here and the two cancel.
+    /// </summary>
+    [Fact]
+    public void InvertsVToCancelTheRenderersTextureFlip()
+    {
+        BinModel model = SmfModelDecoder.Decode(Build(4, Quad("OPAQUE", "WALL.RAW")), "WALL.SMF");
+        BinMesh mesh = Assert.Single(model.Meshes);
+
+        Assert.Equal(0f, mesh.TextureCoordinates[0]);
+        Assert.Equal(0.75f, mesh.TextureCoordinates[1]);   // 1 - 0.25
+    }
+
+    /// <summary>
+    /// The invariant that actually matters, and the one whose absence mirrored every model:
+    /// composed with the renderer's own (x, z, -y), Evo's Z comes out negated and nothing
+    /// else moves. A model that is not Z-negated is its own mirror image, which reads as the
+    /// texture being mirrored because the mesh still carries its own UVs.
+    /// </summary>
+    [Fact]
+    public void ComposesWithTheRendererToNegateEvoZ()
+    {
+        BinModel model = SmfModelDecoder.Decode(Build(4, Quad("OPAQUE", "WALL.RAW")), "WALL.SMF");
+        BinMesh mesh = Assert.Single(model.Meshes);
+
+        // BinOpenGlRenderer.UploadMesh maps (x, y, z) to (x, z, -y) for every model alike.
+        static (float X, float Y, float Z) ToView(IReadOnlyList<float> p, int i) =>
+            (p[i], p[i + 2], -p[i + 1]);
+
+        // Evo vertices of the fixture quad, in file order.
+        (float X, float Y, float Z)[] evo = [(0, 10, 0), (1, 10, 0), (1, 0, 0), (0, 0, 0)];
+        int[] cornerToVertex = [0, 1, 2, 0, 2, 3];
+
+        for (int corner = 0; corner < cornerToVertex.Length; corner++)
+        {
+            (float X, float Y, float Z) source = evo[cornerToVertex[corner]];
+            (float X, float Y, float Z) view = ToView(mesh.Positions, corner * 3);
+            Assert.Equal(source.X, view.X);
+            Assert.Equal(source.Y, view.Y);
+            Assert.Equal(-source.Z, view.Z);
+        }
     }
 
     /// <summary>A v2 and a v3 model carry no LOD header line; reading one would desynchronise.</summary>
@@ -99,8 +141,8 @@ public class SmfModelDecoderTests
         BinMesh mesh = Assert.Single(model.Meshes);
         Assert.Equal(18, mesh.Positions.Count);
         Assert.Empty(model.Warnings);
-        // Frame 0's data, not a later frame's.
-        Assert.Equal(10f, mesh.Positions[1]);
+        // Frame 0's data, not a later frame's. Evo Y lands in Z after the axis swap.
+        Assert.Equal(10f, mesh.Positions[2]);
     }
 
     [Fact]

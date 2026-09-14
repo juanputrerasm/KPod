@@ -98,8 +98,6 @@ Two design choices differ from what this plan assumed, both for the better:
 - **Behaviour parity with JPod 1.3.0.** Every feature in the JPod README works
   the same way, produces byte-identical `.pod`, `.inf` and `.lst` output, and
   reports the same format names.
-- **Full POD1-64 support from day one.** KPod reads and writes the Community
-  Patch 3 extended directory, exactly as JPod now does.
 - **A second .NET 10 build**, published alongside, identical in behaviour, for
   anyone who prefers it.
 - **Testable without Windows.** The domain and file-processing layer builds and
@@ -165,7 +163,7 @@ KPod/
 │   └── main.jpg                 Main-window screenshot for the README
 ├── KPod.Core/                   net48; net10.0
 │   ├── Compat/                  net48 shims, copied from KPodman
-│   ├── Pods/                    POD1, POD1-64, POD2, EPD reading and writing
+│   ├── Pods/                    POD1, POD2, EPD reading and writing
 │   ├── Images/                  RAW / CLR / ACT decoding to pixel arrays
 │   ├── Reports/                 .inf and .lst export
 │   ├── Manifests/               .lst response-file parsing
@@ -200,7 +198,7 @@ JPod is 20 source files, about 4 455 lines. Every one has a destination.
 | `PodSession.java` | 96 | `KPod.Core/Session/PodSession.cs` | Plain properties |
 | `AppConfig.java` | 207 | `KPod.Core/Preferences/AppConfig.cs` + `ConfigStore.cs` | Hand-rolled JSON parser replaced by `Compat/Json.cs` |
 | `io/pod/PodArchive.java` | 178 | `KPod.Core/Pods/PodArchive.cs`, `PodEntry.cs`, `PodFormat.cs` | `Entry` record becomes a C# record; needs `IsExternalInit` on net48 |
-| `io/pod/PodArchiveReader.java` | 295 | `KPod.Core/Pods/PodArchiveReader.cs` | Start from KPodman's file, add POD1-64 detection |
+| `io/pod/PodArchiveReader.java` | 295 | `KPod.Core/Pods/PodArchiveReader.cs` | Start from KPodman's file |
 | `io/pod/PodArchiveWriter.java` | 187 | `KPod.Core/Pods/PodArchiveWriter.cs` | No KPodman equivalent; new code |
 | `io/PodExtractService.java` | 125 | `KPod.Core/Pods/PodExtractService.cs` | `IntConsumer` becomes `IProgress<int>` |
 | `io/PodManifestParser.java` | 81 | `KPod.Core/Manifests/PodManifestParser.cs` | |
@@ -240,70 +238,42 @@ rewrite them.
 
 `KPodman.Core/Pods/PodArchiveReader.cs` is the closest thing to a head start
 that exists: it is already a C# translation of the same Java reader, with the
-same constants and the same EPD name-splitting logic. It implements only the
-classic 40-byte POD1 directory, so KPod's copy needs the POD1-64 work from
-section 5 grafted on.
+same constants and the same EPD name-splitting logic, and the same 40-byte POD1
+directory KPod needs.
 
 ---
 
 ## 5. Format work
 
-JPod gained POD1-64 support before this port started, and KPod inherits it. The
-extension is the Community Patch 3 long-name directory: the 84-byte header is
-unchanged, the name field widens from 32 to 64 bytes, and each directory record
-is therefore 72 bytes instead of 40.
-
-| Property | Classic POD1 | POD1-64 |
-|---|---:|---:|
-| Header | 84 bytes | 84 bytes |
-| Directory name field | 32 bytes | 64 bytes |
-| Longest name | 31 bytes | 63 bytes |
-| Directory record | 40 bytes | 72 bytes |
-| Entry `i` starts at | `84 + i * 40` | `84 + i * 72` |
+POD1 has one directory layout: an 84-byte header, then `n` records of 40 bytes,
+each `char name[32]`, `int32 size`, `int32 offset`. The longest stored path is
+31 characters plus its terminator.
 
 ### Reading
 
-POD1 has no magic value, so the layout is detected by validating it:
+POD1 has no magic value, so the layout is confirmed by validating it:
 
 1. Reject `dtxe` (EPD) and `POD2` first, by signature.
 2. Read the `int32` item count and the 80-byte comment.
-3. Try the classic 40-byte directory. Accept it only if **every** record decodes
-   to a non-empty path free of control characters and drive separators, no
-   longer than 63 bytes, whose byte range lies inside the file.
-4. If that fails, try the 72-byte directory with the same checks.
-5. If neither validates, reject the archive.
+3. Read the 40-byte directory. Accept it only if **every** record is
+   NUL-terminated inside its field and decodes to a non-empty path free of
+   control characters and drive separators, no longer than 31 characters, whose
+   byte range lies inside the file.
+4. If it does not validate, reject the archive.
 
-Classic is tried first so an ordinary archive is never reported as extended.
-Bounds are tested as `offset <= fileSize && length <= fileSize - offset`, never
+Sizes and offsets are read signed, as the engine reads them, so a negative value
+is a rejected volume rather than a 2 GB one. Bounds are tested as
+`offset <= fileSize && length <= fileSize - offset`, never
 `offset + length > fileSize`, which can overflow.
 
 ### Writing
 
-Emit classic POD1 whenever every entry name fits in 31 bytes; switch to POD1-64
-only when a name needs the wider field, because extended archives can only be
-opened by updated engines and tools. The whole stored path counts, including any
-`ART\` or `MODELS\` prefix, the extension, and the terminator. Names longer than
-63 bytes are rejected rather than truncated. Names are NUL-terminated and their
-fields zero-filled. The UI says which layout was written.
-
-### Version tag: unresolved
-
-The upstream engine notes describe production extended archives as "64-byte
-names, version-tagged header", but the companion contract that would define the
-tag bytes and offset has never been published. JPod, JSPod and JSTruckViewer all
-implement the untagged 84-byte-header interpretation and validate it
-structurally. KPod does the same. If a known-good tagged archive turns up, the
-detection in all four projects changes together, driven by the observed bytes
-rather than a guess. Keep any such archive as a test fixture.
-
-### Cross-repository follow-up
-
-`KPodman.Core/Pods/PodArchiveReader.cs` still reads only the classic directory,
-so KPodman currently fails to open an extended POD that KPod writes. The same
-detection change should land there. That is a KPodman change, tracked here only
-so it is not forgotten.
-
----
+Emit the 40-byte record. The whole stored path counts against the 31 characters,
+including any `ART\` or `MODELS\` prefix, the extension and the terminator, plus
+any embedded `.ACT` palette record and its own terminator. A name that does not
+fit is refused, naming the entry and its length, never truncated: a truncated
+name packs without error and then simply never resolves in game. Names are
+NUL-terminated and their fields zero-filled.
 
 ## 6. Phases
 
@@ -325,17 +295,17 @@ warnings, and `dotnet test KPod.slnx -f net10.0` passes, on macOS.
 ### Phase 1 - Archive formats
 
 Port `PodArchive`, `PodEntry`, `PodFormat`, `PodArchiveReader`, and
-`PodArchiveWriter`. Start the reader from KPodman's, then add POD1-64 detection
-and write the writer from JPod's. `PodFormatException` replaces `IOException`
+`PodArchiveWriter`. Start the reader from KPodman's and write the writer from
+JPod's. `PodFormatException` replaces `IOException`
 for malformed archives, as in KPodman.
 
 Port `PodArchiveFormatTest` test for test, then add the POD2 and EPD reader
 tests from `KPodman.Tests/Pods/PodArchiveReaderTests.cs`.
 
-**Exit:** the ported tests pass on both target frameworks. A real classic
-archive (`FURYSE.POD`, 1 330 entries, longest name 19 bytes) reports `POD1` and
-round-trips byte-identically through read then write. A synthetic extended
-archive reports `Extended POD1` and preserves a 40-byte path.
+**Exit:** the ported tests pass on both target frameworks. A real archive
+(`FURYSE.POD`, 1 330 entries, longest name 19 bytes) reports `POD1` and
+round-trips byte-identically through read then write. A synthetic archive whose
+directory records are not 40 bytes is refused.
 
 ### Phase 2 - Services
 
@@ -350,10 +320,10 @@ Preferences live at `%APPDATA%\KPod\config.json`. On first run, import
 someone moving from the Java build keeps their recent-file list.
 
 **Exit:** `.inf` and `.lst` output is byte-identical to JPod's for the same
-archive, verified by diffing against files JPod generated. Note that a POD1-64
-name can be wider than its `.inf` column, in which case the later columns shift
-right rather than overwriting the name; the C# port must reproduce that
-behaviour exactly.
+archive, verified by diffing against files JPod generated. Note that a name can
+be wider than its `.inf` column, in which case the later columns shift right
+rather than overwriting the name; the C# port must reproduce that behaviour
+exactly.
 
 ### Phase 3 - Image decoding
 
@@ -399,8 +369,8 @@ The largest single piece of work: 1 471 lines of Swing become WinForms.
 - Recent files render into the File menu from `AppConfig`.
 
 **Exit:** every feature in the JPod feature list works, checked against the
-manual checklist. Saving an archive whose names exceed 31 bytes reports
-`Extended POD1` in the status line and in the confirmation dialog.
+manual checklist. Saving an archive whose names exceed 31 bytes is refused, with
+the entry named in the message.
 
 ### Phase 6 - Dialogs
 
@@ -493,12 +463,12 @@ after parity.
 `KPod.Tests` targets `net48` and `net10.0` and runs on any OS, exactly like
 `KPodman.Tests` and its 202 tests. Coverage targets, in priority order:
 
-1. **Format round trips.** Classic and POD1-64 write then read, for every
-   boundary: 31-byte name stays classic, 32-byte name forces extended, 63-byte
-   name accepted, 64-byte name rejected.
-2. **Detection.** Hand-built directories at both record widths; the classic
-   layout wins when both could parse; truncated tables, empty name fields,
-   control characters inside names, and out-of-range payloads are all rejected.
+1. **Format round trips.** POD1 write then read, at the name-length boundary: a
+   31-character name is accepted, a 32-character one is refused rather than
+   truncated.
+2. **Detection.** Hand-built directories; a record stride that is not 40 bytes is
+   refused, as are truncated tables, empty name fields, control characters inside
+   names, and out-of-range payloads.
 3. **Golden files.** `.inf` and `.lst` output diffed against files JPod
    produced from the same archive, including one with a name wider than the
    `.inf` name column.
@@ -522,9 +492,7 @@ first run of the unsigned exe.
 | `MainForm` is 1 471 lines of Swing | The port stalls in phase 5 | Phase 4 ships a working shell first, so phase 5 is incremental against a running app |
 | `String.Trim()` and `String.trim()` differ on control characters | Silent divergence in name decoding between JPod and KPod | Called out in the mapping table; covered by a dedicated test |
 | `ListView` performance on 4 000+ entries | Unusable on Hellbender's `GAME.POD` | Virtual mode from the start, not retrofitted |
-| No tagged POD1-64 fixture exists | A production C-Pod archive might not open | Structural validation only, documented as unresolved, fixture kept if one appears |
 | WinForms differences between net48 and net10 | One leg breaks silently | Both legs build in CI; the manual checklist is run against the net48 exe, which is the shipping one |
-| KPodman's reader lacks POD1-64 | An archive KPod writes will not mount | Tracked as a cross-repository follow-up in section 5 |
 | Scope creep during the port | Parity never arrives | No feature additions before 1.0.0; new ideas go in an issue |
 
 ---
@@ -538,8 +506,8 @@ first run of the unsigned exe.
   single exe that runs on a clean Windows 10 install with no runtime downloaded.
 - Every feature in the JPod README works, verified against
   `MANUAL-CHECKLIST.md`.
-- A classic archive round-trips byte-identically; an extended archive preserves
-  every path in full and is reported as `Extended POD1`.
+- A shipped archive round-trips byte-identically, spare bytes after each name
+  terminator included.
 - `README.md` follows the KPodman structure and states the .NET Framework 4.8
   requirement plainly.
 
@@ -567,6 +535,6 @@ dotnet publish KPod.Windows -c Release -f net10.0-windows -r win-x64 \
 
 - [JPod](https://github.com/juanputrerasm/JPod) - the Java 17 original this port follows
 - [KPodman](https://github.com/juanputrerasm/KPodman) - the build, compat and packaging template used throughout
-- [JSPod POD1-64 format notes](../JSPod/docs/POD1_64_FORMAT.md) - the description
-  of the extended directory, and the record of what is still unknown
+- [POD1 format hand-over](https://www.mtm2.com/~mtmg/misc/POD1_FORMAT_HANDOVER.md) - the container layout, checked against the engine source
+- [JSPod POD1 format notes](../JSPod/docs/POD1_FORMAT.md) - the same layout as the JavaScript readers implement it
 - [MTM2 Engine Content Limits](https://www.mtm2.com/~mtmg/misc/ENGINE_LIMITS.md)

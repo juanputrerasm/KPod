@@ -3,7 +3,12 @@ using KPod.Core.Compat;
 namespace KPod.Core.Pods;
 
 /// <summary>
-/// Strict POD1/POD1-64 and isolated POD2 archive writer.
+/// Strict POD1 and isolated POD2 archive writer.
+///
+/// <para>A POD1 directory record is 40 bytes: <c>char name[32]</c>, <c>int32 size</c>,
+/// <c>int32 offset</c>. A name that does not fit the 31-byte budget is a refusal naming
+/// the entry and its length, never a truncation: a truncated name packs without error
+/// and then simply never resolves in game.</para>
 ///
 /// <para>Archives are written straight to the output stream, one payload at a time
 /// through a shared transfer buffer, so building a 200 MB archive costs the directory
@@ -16,12 +21,11 @@ public static class PodArchiveWriter
 {
     private const int CommentSize = 80;
     private const int EntryNameSize = 32;
-    private const int LongNameSize = 64;
     private const int Pod2HeaderSize = 96;
     private const int Pod2EntrySize = 20;
     private const int Pod2AuditSize = 312;
     private const int MaxItems = PodArchiveReader.MaxReasonableItems;
-    public const int MaxNameLength = LongNameSize - 1;
+    public const int MaxNameLength = EntryNameSize - 1;
 
     /// <summary>Suffix of the temporary file a write builds before replacing the target.</summary>
     private const string TempSuffix = ".kpodtmp";
@@ -97,25 +101,15 @@ public static class PodArchiveWriter
     public static PodFormat FormatFor(IReadOnlyList<PodBlob> blobs) =>
         ActualFormat(blobs, PodFormat.Pod1);
 
+    /// <summary>Validates the requested output format.</summary>
     public static PodFormat ActualFormat(IReadOnlyList<PodBlob> blobs, PodFormat requested)
     {
-        if (requested == PodFormat.Pod2) return requested;
-        if (requested is not (PodFormat.Pod1 or PodFormat.Pod1Extended))
-            throw new ArgumentException("Unsupported output format: " + requested, nameof(requested));
-        if (requested == PodFormat.Pod1Extended) return requested;
-        foreach (PodBlob blob in blobs)
-        {
-            if (RequiredNameFieldLength(blob) > EntryNameSize) return PodFormat.Pod1Extended;
-        }
-
-        return PodFormat.Pod1;
+        if (requested is PodFormat.Pod2 or PodFormat.Pod1) return requested;
+        throw new ArgumentException("Unsupported output format: " + requested, nameof(requested));
     }
 
-    /// <summary>Width of a classic POD1 directory name field.</summary>
+    /// <summary>Width of a POD1 directory name field.</summary>
     public const int ClassicNameFieldSize = EntryNameSize;
-
-    /// <summary>Width of a POD1-64 directory name field.</summary>
-    public const int LongNameFieldSize = LongNameSize;
 
     /// <summary>
     /// Bytes a directory name field must hold for this name and palette name,
@@ -217,15 +211,38 @@ public static class PodArchiveWriter
 
     private static Pod1Plan Pod1Layout(IReadOnlyList<PodBlob> blobs, PodFormat actual)
     {
-        int nameSize = actual == PodFormat.Pod1Extended ? LongNameSize : EntryNameSize;
+        const int nameSize = EntryNameSize;
         foreach (PodBlob blob in blobs)
         {
-            if (RequiredNameFieldLength(blob) > nameSize)
-                throw new PodFormatException(
-                    $"POD entry name/palette exceeds {nameSize - 1} usable bytes: {blob.Name}");
+            CheckNameFits(blob);
         }
         int headerSize = checked(sizeof(int) + CommentSize + (blobs.Count * (nameSize + 8)));
         return new Pod1Plan(nameSize, headerSize, OffsetsFor(blobs, headerSize));
+    }
+
+    /// <summary>
+    /// Refuses a name the 32-byte directory field cannot hold, naming the entry and the
+    /// length so the author can shorten it. Never truncates: a truncated name packs
+    /// without error and then fails to match at load time, which is far harder to
+    /// diagnose than a refusal.
+    ///
+    /// <para>The whole stored path counts, including any <c>ART\</c> or <c>MODELS\</c>
+    /// prefix, the extension and the terminator - and, on the <c>.RAW</c> entries that
+    /// carry one, the embedded <c>.ACT</c> palette record after it. A palette record that
+    /// no longer fits is reported separately, because dropping it loses producer data that
+    /// was in the file and shortening the path is not the only remedy.</para>
+    /// </summary>
+    private static void CheckNameFits(PodBlob blob)
+    {
+        int name = NameByteLength(blob.Name);
+        if (name > MaxNameLength)
+            throw new PodFormatException(
+                $"POD entry name is {name} bytes; POD1 holds {MaxNameLength}: {blob.Name}");
+        int required = RequiredNameFieldLength(blob);
+        if (required > EntryNameSize)
+            throw new PodFormatException(
+                $"POD entry name plus its embedded palette record is {required} bytes; the "
+                + $"directory field holds {EntryNameSize}: {blob.Name} + {blob.EmbeddedPaletteName}");
     }
 
     private static Pod2Plan Pod2Layout(string? comment, IReadOnlyList<PodBlob> blobs,

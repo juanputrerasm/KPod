@@ -712,12 +712,7 @@ internal sealed class MainForm : Form
             _openedArchive = archive;
             _openedWithDuplicateNames = HasDuplicateNames(archive);
             _currentArchivePath = path;
-            _outputFormat = archive.Format switch
-            {
-                PodFormat.Pod1Extended => PodFormat.Pod1Extended,
-                PodFormat.Pod2 => PodFormat.Pod2,
-                _ => PodFormat.Pod1,
-            };
+            _outputFormat = archive.Format == PodFormat.Pod2 ? PodFormat.Pod2 : PodFormat.Pod1;
             _auditEntries.Clear();
             _auditEntries.AddRange(archive.AuditEntries);
             _session.OpenArchive = archive;
@@ -1071,15 +1066,6 @@ internal sealed class MainForm : Form
             // entry added from disk still held its bytes. Rebinding to what is now on
             // disk fixes both, and costs one directory read.
             await RebindTo(target);
-
-            if (written == PodFormat.Pod1Extended && requested == PodFormat.Pod1)
-            {
-                Dialogs.Info(
-                    this,
-                    "This archive contains entry names longer than 31 characters, so it was "
-                    + "written with the 64-byte POD1 directory.\n"
-                    + "Only updated engines and tools can open it.");
-            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OverflowException)
         {
@@ -1665,13 +1651,13 @@ internal sealed class MainForm : Form
 
     private PodFormat? ChooseOutputFormat()
     {
-        string[] labels = ["POD1", "Extended POD1", "POD2"];
+        // EPD is read-only, so POD1 and POD2 are the writable formats.
+        string[] labels = ["POD1", "POD2"];
         string initial = DisplayName(_outputFormat);
         string? selected = ChooseValue("Archive format:", "Save Archive As", labels, initial);
         return selected switch
         {
             "POD1" => PodFormat.Pod1,
-            "Extended POD1" => PodFormat.Pod1Extended,
             "POD2" => PodFormat.Pod2,
             _ => null,
         };
@@ -1853,7 +1839,6 @@ internal sealed class MainForm : Form
     private static string DisplayName(PodFormat format) => format switch
     {
         PodFormat.Pod1 => "POD1",
-        PodFormat.Pod1Extended => "Extended POD1",
         PodFormat.Pod2 => "POD2",
         PodFormat.Epd => "EPD",
         _ => format.ToString(),

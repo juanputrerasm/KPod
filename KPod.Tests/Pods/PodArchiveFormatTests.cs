@@ -4,15 +4,16 @@ using KPod.Core.Pods;
 namespace KPod.Tests.Pods;
 
 /// <summary>
-/// Covers classic POD1 and POD1-64 directory detection, round-tripping, and the
-/// rejection rules from the POD1-64 format notes. Ported test for test from JPod's
-/// PodArchiveFormatTest.
+/// Covers POD1 directory detection, round-tripping, and the rejection rules from the
+/// POD1 format hand-over: 40-byte records, a 31-character name budget, and a refusal
+/// rather than a truncation or a wider directory when a name overruns it. Ported test
+/// for test from JPod's PodArchiveFormatTest.
 /// </summary>
 public class PodArchiveFormatTests
 {
     private const string ShortName = @"ART\WALL01.RAW";
 
-    /// <summary>40 bytes: past the classic 31-byte budget, inside the 63-byte one.</summary>
+    /// <summary>40 bytes: past the 31-byte budget a POD1 directory field can hold.</summary>
     private const string LongName = @"MODELS\TRUCKS\CUSTOM_BIGFOOT_WHEEL01.RAW";
 
     [Fact]
@@ -36,30 +37,20 @@ public class PodArchiveFormatTests
     }
 
     [Fact]
-    public void OneLongNameSwitchesTheWholeDirectoryToPod164()
+    public void OneLongNameIsRefused()
     {
         using TempDir temp = new();
-        string file = temp.Resolve("extended.pod");
+        string file = temp.Resolve("overlong.pod");
 
-        PodFormat written = PodArchiveWriter.Write(
-            file, "extended archive", [Blob(ShortName, 10), Blob(LongName, 20)]);
+        PodFormatException ex = Assert.Throws<PodFormatException>(() => PodArchiveWriter.Write(
+            file, "overlong archive", [Blob(ShortName, 10), Blob(LongName, 20)]));
 
-        Assert.Equal(PodFormat.Pod1Extended, written);
-
-        using PodArchive archive = PodArchiveReader.Read(file);
-        Assert.Equal(PodFormat.Pod1Extended, archive.Format);
-        Assert.Equal("Extended POD1", archive.FormatDisplayName);
-        Assert.True(archive.IsPod1Family);
-        Assert.Equal("extended archive", archive.Comment);
-        Assert.Equal([ShortName, LongName], archive.Entries.Select(e => e.Name));
-
-        // 72-byte records place the first payload after the wider table.
-        Assert.Equal(84 + (2 * 72), archive.Entries[0].Offset);
-        Assert.Equal(PodFixture.Payload(20), archive.GetEntryBytes(archive.Entries[1]));
+        Assert.Contains(LongName, ex.Message, StringComparison.Ordinal);
+        Assert.Contains("31", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void NameOfExactly31BytesStaysClassic()
+    public void NameOfExactly31BytesFits()
     {
         using TempDir temp = new();
         Assert.Equal(
@@ -68,55 +59,59 @@ public class PodArchiveFormatTests
     }
 
     [Fact]
-    public void NameOfExactly32BytesNeedsPod164()
+    public void NameOfExactly32BytesIsRejected()
     {
-        using TempDir temp = new();
-        string file = temp.Resolve("edge32.pod");
-        string name = new('A', 32);
-
-        Assert.Equal(PodFormat.Pod1Extended, PodArchiveWriter.Write(file, string.Empty, [Blob(name, 4)]));
-        using PodArchive archive = PodArchiveReader.Read(file);
-        Assert.Equal(name, archive.Entries[0].Name);
-    }
-
-    [Fact]
-    public void NameOfExactly63BytesIsAccepted()
-    {
-        using TempDir temp = new();
-        string file = temp.Resolve("edge63.pod");
-        string name = new('A', 63);
-
-        Assert.Equal(PodFormat.Pod1Extended, PodArchiveWriter.Write(file, string.Empty, [Blob(name, 4)]));
-        using PodArchive archive = PodArchiveReader.Read(file);
-        Assert.Equal(name, archive.Entries[0].Name);
-    }
-
-    [Fact]
-    public void NameTooLongForPod164IsRejected()
-    {
+        // 32 characters leaves no room for the terminator the engine scans for.
         PodFormatException ex = Assert.Throws<PodFormatException>(
-            () => PodArchiveWriter.BuildBytes(string.Empty, [Blob(new string('A', 64), 4)]));
+            () => PodArchiveWriter.BuildBytes(string.Empty, [Blob(new string('A', 32), 4)]));
 
-        Assert.Contains("63", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("32 bytes", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("31", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void HandWrittenPod164DirectoryIsDetected()
+    public void AnOverlongNameIsNeverSilentlyTruncated()
     {
+        // A truncated name packs without error and then simply never resolves in game,
+        // which is far harder to diagnose than a refusal.
+        using TempDir temp = new();
+        string file = temp.Resolve("nothing-written.pod");
+        string name = @"ART" + new string('A', 40) + ".RAW";
+
+        Assert.Throws<PodFormatException>(
+            () => PodArchiveWriter.BuildBytes(string.Empty, [Blob(name, 4)]));
+        Assert.Throws<PodFormatException>(
+            () => PodArchiveWriter.Write(file, string.Empty, [Blob(name, 4)]));
+        Assert.False(File.Exists(file), "a refused write must not leave a file behind");
+    }
+
+    [Fact]
+    public void ASeventyTwoByteDirectoryIsRefused()
+    {
+        // A directory of 72-byte records is not a POD1 directory. The engine walks a POD1
+        // directory in 40-byte steps and refuses the volume, and so does this reader.
         using TempDir temp = new();
         string file = temp.WriteFile(
             "handmade.pod",
-            PodFixture.BuildPod164(new PodFile(LongName, PodFixture.Payload(6))));
+            PodFixture.BuildSeventyTwoByteDirectory(new PodFile(LongName, PodFixture.Payload(6))));
 
-        using PodArchive archive = PodArchiveReader.Read(file);
-
-        Assert.Equal(PodFormat.Pod1Extended, archive.Format);
-        Assert.Equal(LongName, archive.Entries[0].Name);
-        Assert.Equal(PodFixture.Payload(6), archive.GetEntryBytes(archive.Entries[0]));
+        Assert.Throws<PodFormatException>(() => PodArchiveReader.Read(file));
     }
 
     [Fact]
-    public void ClassicLayoutWinsWhenBothCouldParse()
+    public void ASeventyTwoByteDirectoryIsRefusedEvenWhenItsNamesWouldFit()
+    {
+        // Nothing about the names makes the record stride right.
+        using TempDir temp = new();
+        string file = temp.WriteFile(
+            "shortnames72.pod",
+            PodFixture.BuildSeventyTwoByteDirectory(new PodFile(ShortName, PodFixture.Payload(6))));
+
+        Assert.Throws<PodFormatException>(() => PodArchiveReader.Read(file));
+    }
+
+    [Fact]
+    public void TheFortyByteLayoutWinsWhenBothCouldParse()
     {
         using TempDir temp = new();
         string file = temp.WriteFile(
@@ -269,15 +264,13 @@ public class PodArchiveFormatTests
         using PodArchive archive = PodArchiveReader.Read(file);
         PodEntry original = archive.Entries[0];
 
-        // Adding a long-named entry forces the 64-byte directory; the preserved
-        // 32-byte field must be copied into it rather than dropped.
         List<PodBlob> blobs =
         [
             new PodBlob(original.Name, archive.GetEntryBytes(original), original.RawNameField),
-            Blob(LongName, 4),
+            Blob(@"ART\ADDED.RAW", 4),
         ];
         string target = temp.Resolve("mixed-out.pod");
-        Assert.Equal(PodFormat.Pod1Extended, PodArchiveWriter.Write(target, archive.Comment, blobs));
+        Assert.Equal(PodFormat.Pod1, PodArchiveWriter.Write(target, archive.Comment, blobs));
 
         byte[] written = File.ReadAllBytes(target);
         Assert.Equal(
@@ -354,25 +347,15 @@ public class PodArchiveFormatTests
     }
 
     [Fact]
-    public void ExplicitExtendedSaveNeverCollapsesToClassic()
+    public void APod1ArchiveWithAPaletteRoundTripsByteForByte()
     {
-        using TempDir temp = new();
-        byte[] bytes = PodArchiveWriter.BuildBytes(string.Empty, [Blob("SHORT.RAW", 4)],
-            new PodWriteOptions(PodFormat.Pod1Extended, null, []));
-        string path = temp.WriteFile("forced.pod", bytes);
-        using (PodArchive archive = PodArchiveReader.Read(path))
-            Assert.Equal(PodFormat.Pod1Extended, archive.Format);
-        Assert.Equal(84 + 72 + 4, bytes.Length);
-    }
-
-    [Fact]
-    public void ExtendedArchiveWithPaletteRoundTripsByteForByte()
-    {
-        byte[] original = PodFixture.BuildPod164(new PodFile(LongName, PodFixture.Payload(7)));
+        // The regression guard that matters most: a legacy pod must come back out
+        // byte-identical, spare bytes after the terminator included.
+        byte[] original = PodFixture.BuildPod1(new PodFile(ShortName, PodFixture.Payload(7)));
         byte[] palette = PodText.Latin1.GetBytes("VGA.ACT");
-        Array.Copy(palette, 0, original, 84 + LongName.Length + 1, palette.Length);
+        Array.Copy(palette, 0, original, 84 + ShortName.Length + 1, palette.Length);
         using TempDir temp = new();
-        using PodArchive archive = PodArchiveReader.Read(temp.WriteFile("extended-palette.pod", original));
+        using PodArchive archive = PodArchiveReader.Read(temp.WriteFile("pod1-palette.pod", original));
         PodEntry entry = archive.Entries[0];
         PodBlob blob = new(entry.Name, archive.GetEntryBytes(entry), entry.RawNameField,
             entry.EmbeddedPaletteName, 0);
@@ -389,13 +372,32 @@ public class PodArchiveFormatTests
         byte[] palette = PodText.Latin1.GetBytes("METALCR2.ACT");
         Array.Copy(oldName, field, oldName.Length);
         Array.Copy(palette, 0, field, oldName.Length + 1, palette.Length);
-        PodBlob renamed = new(@"ART\A_LONGER_RENAMED_TEXTURE.RAW", PodFixture.Payload(4),
+        PodBlob renamed = new(@"ART\RENAMED.RAW", PodFixture.Payload(4),
             field, "METALCR2.ACT", 0);
         using TempDir temp = new();
         string path = temp.WriteFile("renamed.pod", PodArchiveWriter.BuildBytes("", [renamed]));
         using PodArchive archive = PodArchiveReader.Read(path);
-        Assert.Equal(PodFormat.Pod1Extended, archive.Format);
+        Assert.Equal(PodFormat.Pod1, archive.Format);
+        Assert.Equal(@"ART\RENAMED.RAW", archive.Entries[0].Name);
         Assert.Equal("METALCR2.ACT", archive.Entries[0].EmbeddedPaletteName);
+    }
+
+    [Fact]
+    public void ARenameWhosePaletteRecordNoLongerFitsIsRefused()
+    {
+        // Name plus terminator plus palette plus terminator must fit the 32-byte field.
+        // Refusing names the palette too, because shortening the path is not the only
+        // remedy - the caller can also clear the hint.
+        byte[] field = new byte[32];
+        byte[] oldName = PodText.Latin1.GetBytes("OLD.RAW");
+        Array.Copy(oldName, field, oldName.Length);
+        PodBlob renamed = new(@"ART\A_MUCH_LONGER_NAME.RAW", PodFixture.Payload(4),
+            field, "METALCR2.ACT", 0);
+
+        PodFormatException ex = Assert.Throws<PodFormatException>(
+            () => PodArchiveWriter.BuildBytes("", [renamed]));
+
+        Assert.Contains("METALCR2.ACT", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -421,15 +423,14 @@ public class PodArchiveFormatTests
     {
         byte[] classic = PodArchiveWriter.BuildBytes("vector",
             [new PodBlob("A.TXT", [1, 2, 3], timestamp: 0)]);
-        byte[] extended = PodArchiveWriter.BuildBytes("vector",
-            [new PodBlob(@"ART\T.RAW", [4, 5], embeddedPaletteName: "METALCR2.ACT", timestamp: 0)],
-            new PodWriteOptions(PodFormat.Pod1Extended, null, []));
+        byte[] palette = PodArchiveWriter.BuildBytes("vector",
+            [new PodBlob(@"ART\T.RAW", [4, 5], embeddedPaletteName: "METALCR2.ACT", timestamp: 0)]);
         byte[] pod2 = PodArchiveWriter.BuildBytes("vector",
             [new PodBlob("A.TXT", [1, 2, 3], timestamp: 1_700_000_000)],
             new PodWriteOptions(PodFormat.Pod2, null, []));
 
         Assert.Equal("a909fc89a0f2b8d1bb4c4e28b4288b8440c7bc67bd2a8258d0438dce2f008cb8", Sha256(classic));
-        Assert.Equal("693e615f827790ba6aa6126b2ca27f0fde6ec34d58fdf1edb63b0f4328c609ef", Sha256(extended));
+        Assert.Equal("730fc5da3fed95209929bbb98389b0bfb979df9e88d526cb0630a7669c0562ee", Sha256(palette));
         Assert.Equal("a1679199ed5bb19ba310ae18ea7c0bc6a8c7a55a9244320fb8dbf4cebf5d1c80", Sha256(pod2));
         Assert.Equal(0x0376E6E7u, PodArchiveWriter.Crc32Mpeg2(PodText.Latin1.GetBytes("123456789")));
     }

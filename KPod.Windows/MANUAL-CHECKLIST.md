@@ -30,7 +30,8 @@ EPD (Fly!), and one saved by KPod itself with a name longer than 31 characters.
 - [ ] A classic POD opens, the title reads `KPod - NAME.POD (POD1)`, and the
       status line reports the entry count.
 - [ ] A POD2 archive reads `(POD2)`; an EPD reads `(EPD)`.
-- [ ] An archive saved with a long name reads `(Extended POD1)`.
+- [ ] A pod whose directory records are not 40 bytes is refused with a message,
+      and no archive is opened.
 - [ ] Folders show a folder icon, start collapsed, and sit above the loose files.
 - [ ] Double-clicking a folder row expands it; double-clicking again collapses it.
       The row stays selected across the toggle.
@@ -170,14 +171,12 @@ EPD (Fly!), and one saved by KPod itself with a name longer than 31 characters.
 - [ ] **Save As...** on an archive whose names all fit in 31 characters writes a
       file whose status line says `(POD1)`.
 - [ ] Reopening that file reports `POD1` and lists the same entries.
-- [ ] Adding a file whose name exceeds 31 characters and saving reports
-      `(Extended POD1)` in the status line and shows the explanatory dialog.
-- [ ] Reopening that file reports `Extended POD1` and the long name survives in
-      full.
-- [ ] `Size` in the status bar grows by 32 bytes per entry the moment the archive
-      tips over into the extended layout.
-- [ ] Trying to save an entry whose name is longer than 63 characters fails with a
-      message naming the entry, and writes nothing.
+- [ ] Adding a file whose name exceeds 31 characters and saving fails with a
+      message naming the entry and its length, and writes nothing. It must not
+      truncate the name and must not widen the directory.
+- [ ] The **Save Archive As** format list offers `POD1` and `POD2` only.
+- [ ] `Size` in the status bar counts 40 bytes per entry regardless of name
+      length.
 - [ ] Save As appends `.pod` when the typed name has no extension.
 
 ## Extraction
@@ -189,7 +188,8 @@ EPD (Fly!), and one saved by KPod itself with a name longer than 31 characters.
       the destination.
 - [ ] The status line counts progress during a large extraction and reads
       `Extraction complete.` at the end.
-- [ ] Extracting from an Extended POD1 archive recreates the full long path.
+- [ ] Extracting an entry with a nested 31-character path recreates the folders
+      and the full name.
 - [ ] Extracting to a read-only or missing destination reports the error rather
       than failing silently.
 
@@ -200,8 +200,8 @@ EPD (Fly!), and one saved by KPod itself with a name longer than 31 characters.
       and the offset at column 45.
 - [ ] The file starts with the letter `P`, not a byte-order mark. Check in a hex
       editor.
-- [ ] For an Extended POD1 archive, a name wider than 30 characters pushes the
-      size and offset right instead of overwriting the name.
+- [ ] A name wider than 30 characters pushes the size and offset right instead of
+      overwriting the name.
 - [ ] **Save .lst List** produces one entry name per line, and that file loads
       back through File > Open Response List File.
 - [ ] Save .inf on a manifest-loaded list warns that a POD must be open first.

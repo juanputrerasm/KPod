@@ -176,16 +176,16 @@ public class PodWriterStreamingTests
     }
 
     [Fact]
-    public void ValidatingForSaveStillWarnsWhenTheLongDirectoryIsNeeded()
+    public void ValidatingForSaveRefusesAnOversizedNameInsteadOfWidening()
     {
         PodBlob blob = new(new string('A', 40) + ".RAW", PodFixture.Payload(4));
 
         PodValidationResult result = PodArchiveValidator.ValidateForSave(
             string.Empty, [blob], PodFormat.Pod1);
 
-        Assert.True(result.IsValid);
-        Assert.Equal(PodFormat.Pod1Extended, result.OutputFormat);
-        Assert.Contains(result.Warnings, w => w.Contains("Extended POD1"));
+        Assert.False(result.IsValid);
+        Assert.Equal(PodFormat.Pod1, result.OutputFormat);
+        Assert.Contains(result.Errors, e => e.Contains("31", StringComparison.Ordinal));
     }
 
     [Fact]

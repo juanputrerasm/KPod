@@ -9,9 +9,9 @@
 
 KPod opens, browses, previews, extracts and builds the `POD` archives used by
 *Monster Truck Madness 1 & 2*, *CART Precision Racing*, *Hellbender*, *Terminal
-Velocity*, *Fury3*, *Nocturne*, *4x4 EVO 1 & 2* and their relatives. It reads and writes both the classic POD1
-format and the Community Patch 3 **POD1-64** extension with 64-byte entry
-names. It also reads and explicitly authors `POD2`; `EPD` remains read-only.
+Velocity*, *Fury3*, *Nocturne*, *4x4 EVO 1 & 2* and their relatives. It reads and
+writes the `POD1` format and reads and explicitly authors `POD2`; `EPD` remains
+read-only.
 
 It started as a Windows-native port of
 [JPod](https://github.com/juanputrerasm/JPod), the Java 17 original, and matches
@@ -29,7 +29,6 @@ format names.
 | Format | Games | Support |
 |---|---|---|
 | `POD1` | MTM 1 & 2, CPR, Hellbender, Terminal Velocity, Fury3 | browse, preview, extract, save |
-| `POD1-64` (Extended POD1) | Community Patch 3 content | browse, preview, extract, save |
 | `POD2` | Nocturne, 4x4 Evo 1 & 2 | browse, preview, extract, explicit save/conversion, CRC, timestamp and audit history |
 | `EPD` | Fly! | browse, preview, extract |
 
@@ -111,10 +110,12 @@ to 4 including Evo 2's `v1` bump materials. It opens in the same viewer as `.bin
 and is recognised by its magic rather than its extension, so an entry whose name is
 missing or wrong still opens as the model it is.
 
-Two things differ from `.bin` and travel on the model rather than being assumed by
-the renderer. Evo geometry is Y-up where `.bin` is Z-up, so its axes are not swapped
-into view space; and Evo's texture V runs top-down, so its art is uploaded without
-the vertical flip `.bin` art needs. Its groups are drawn double-sided, because Evo's
+Evo is Y-up where `.bin` is Z-up, and Evo's texture V runs top-down where `.bin`'s
+does not, so the decoder converts both into the `.bin` convention as it reads. The
+renderer then treats every model alike, with no per-format branching. That conversion
+negates Evo's Z on the way to the screen; leaving it out renders the model as its own
+mirror image, which reads as the texture being mirrored because a mirrored mesh still
+carries its own UVs. Its groups are drawn double-sided, because Evo's
 foliage, fences and banners are single-sided sheets meant to be seen from behind.
 
 Diffuse textures resolve `.png`, `.tga`, `.tif`, then `.raw`. An Evo `.raw` also
@@ -258,36 +259,21 @@ save cannot damage the original.
 
 ---
 
-## POD1-64 (Extended POD1)
+## The POD1 name budget
 
-POD1-64 is the Community Patch 3 long-name extension. It is not a 64-bit archive
-format and it is not EPD: the 64 refers only to the widened directory name field.
+MTM2 reads exactly one POD layout. Its directory entries are 40 bytes:
+`char name[32]`, `int32 size`, `int32 offset`, holding paths of up to 31
+characters. A directory table that does not validate as 40-byte records is a
+malformed archive, and KPod refuses it.
 
-| Property | Classic POD1 | POD1-64 |
-|---|---:|---:|
-| Header | 84 bytes | 84 bytes |
-| Directory name field | 32 bytes | 64 bytes |
-| Longest name | 31 bytes | 63 bytes |
-| Directory record | 40 bytes | 72 bytes |
-| Directory entry `i` starts at | `84 + i * 40` | `84 + i * 72` |
+KPod refuses a name that does not fit rather than truncating it. A truncated name
+packs without error and then simply never resolves in game, which is far harder to
+diagnose than a refusal. The complete record counts against the 31 bytes: the path,
+its terminator, and on a `.RAW` entry any embedded palette name and its terminator.
 
-POD1 has no magic value, so KPod detects the layout by validating it. The classic
-40-byte directory is tried first and accepted only when every record decodes to a
-plausible non-empty path whose byte range lies inside the file; the 72-byte layout
-is tried only if the classic table fails. That ordering keeps an ordinary archive
-from being reported as extended. The title bar shows `Extended POD1` when the
-wider directory was used.
-
-For a new archive, KPod emits classic POD1 whenever every complete directory field
-fits and promotes to POD1-64 only when a path or embedded RAW palette record needs
-the wider field. An opened POD1-64 archive stays extended. The complete record,
-including both strings and their terminators, must fit; otherwise saving is rejected
-instead of truncating metadata. The actual output format is confirmed before writing.
-
-The upstream engine notes describe production extended archives as carrying a
-version-tagged header, but the contract that would define the tag has never been
-published. KPod, JPod, JSPod and JSTruckViewer all implement the untagged
-84-byte-header interpretation and validate it structurally.
+Authoring guidance goes further and keeps the *stem* to 18 characters, because the
+engine builds sibling names from it and every derived name must still fit 31.
+`ART\` plus an 18-character stem plus `_MASK` plus `.PNG` is exactly 31.
 
 ---
 
@@ -361,8 +347,7 @@ the buttons fall back to plain text labels.
 ### Status bar
 
 `Size` is what the archive would occupy if saved now, which is why it changes as
-entries are added and removed, and why it grows by 32 bytes per entry the moment a
-name forces the POD1-64 directory. `Files` and `Selected` are counts, `unsaved`
+entries are added and removed. `Files` and `Selected` are counts, `unsaved`
 appears once the list differs from what is on disk, and the square at the right
 edge turns red while an operation is running.
 
@@ -504,8 +489,8 @@ use the K-only variant, because the slabs turn to mush below 32px.
 
 ## Format specification
 
-[`docs/POD_FORMAT.md`](docs/POD_FORMAT.md) specifies the whole POD family: classic
-POD1, the POD1-64 long-name extension, POD2 and EPD. It covers the palette record
+[`docs/POD_FORMAT.md`](docs/POD_FORMAT.md) specifies the whole POD family: POD1,
+POD2 and EPD. It covers the palette record
 the early Terminal Reality packer stored in the spare bytes of each RAW entry's
 name field, which is documented nowhere else, and it marks every claim as verified
 against shipped archives, documented upstream, implemented but unconfirmed, or

@@ -33,11 +33,12 @@ public class PodReportExporterTests
     }
 
     [Fact]
-    public void APod164NameWiderThanItsColumnShiftsTheLaterColumnsRight()
+    public void ANameWiderThanItsColumnShiftsTheLaterColumnsRight()
     {
         using TempDir temp = new();
-        const string longName = @"MODELS\TRUCKS\CUSTOM_BIGFOOT_WHEEL01.RAW";
-        string pod = temp.WriteFile("long.pod", PodFixture.BuildPod164(
+        // 31 characters, one past the 30-column name field.
+        const string longName = @"MODELS\TRUCKS\BIGFOOTWHEEL1.RAW";
+        string pod = temp.WriteFile("long.pod", PodFixture.BuildPod1(
             new PodFile(longName, PodFixture.Payload(4))));
         string report = temp.Resolve("long.inf");
 

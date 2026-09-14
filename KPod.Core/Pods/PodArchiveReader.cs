@@ -3,9 +3,8 @@ using KPod.Core.Compat;
 namespace KPod.Core.Pods;
 
 /// <summary>
-/// Reads Terminal Reality POD archives. Supports classic POD1, the POD1-64 long-name
-/// extension, POD2 and EPD; there is no POD3+ support and no checksum verification at
-/// parse time, matching JPod.
+/// Reads Terminal Reality POD archives. Supports POD1, POD2 and EPD; there is no
+/// POD3+ support and no checksum verification at parse time, matching JPod.
 ///
 /// <para>Only the header and the directory are read. A POD directory is a few
 /// kilobytes even when the archive is hundreds of megabytes, so payloads stay on disk
@@ -20,10 +19,9 @@ namespace KPod.Core.Pods;
 ///   <item>Per-entry data bounds check</item>
 /// </list>
 ///
-/// <para>POD version 1 has no magic value, so the directory layout is detected by
-/// validating it. The classic 40-byte record is tried first and the 72-byte
-/// POD1-64 record only if the classic table fails to validate, which keeps
-/// ordinary archives from being reported as extended.</para>
+/// <para>POD version 1 has no magic value, and its directory record is 40 bytes:
+/// char name[32], int32 size, int32 offset. That is the only layout, so a directory
+/// table that does not validate as one is refused.</para>
 /// </summary>
 public static class PodArchiveReader
 {
@@ -34,9 +32,6 @@ public static class PodArchiveReader
     private const int PodEntryNameSize = 32;
     private const int Pod1EntrySize = 40;
 
-    /// <summary>POD1-64 widens the directory name field to 64 bytes, giving 72-byte records.</summary>
-    private const int Pod164NameSize = 64;
-    private const int Pod164EntrySize = 72;
 
     private const int Pod2EntrySize = 20;
     private const int Pod2AuditSize = 312;
@@ -60,8 +55,8 @@ public static class PodArchiveReader
     /// <summary>Archives claiming more entries than this are rejected as corrupt.</summary>
     public const int MaxReasonableItems = 8192;
 
-    /// <summary>Longest name a POD1-64 directory record can hold, excluding the terminator.</summary>
-    public const int MaxNameLength = Pod164NameSize - 1;
+    /// <summary>Longest name a POD1 directory record can hold, excluding the terminator.</summary>
+    public const int MaxNameLength = PodEntryNameSize - 1;
 
     /// <summary>
     /// Opens an archive from disk. The archive keeps the file open for as long as it
@@ -135,45 +130,34 @@ public static class PodArchiveReader
         byte[] commentField = new byte[PodCommentSize];
         Array.Copy(head, sizeof(int), commentField, 0, PodCommentSize);
 
-        // Read the widest table the two layouts could need, so the classic and the
-        // POD1-64 attempts both work off this one buffer.
-        long widest = Pod1HeaderSize + ((long)itemCount * Pod164EntrySize);
-        byte[] directory = source.ReadExact(0, (int)Math.Min(widest, source.Length));
+        long tableEnd = Pod1HeaderSize + ((long)itemCount * Pod1EntrySize);
+        byte[] directory = source.ReadExact(0, (int)Math.Min(tableEnd, source.Length));
 
-        List<PodEntry>? classic = TryReadPod1Directory(
-            directory, source.Length, itemCount, PodEntryNameSize, Pod1EntrySize);
-        if (classic is not null)
-        {
-            return new PodArchive(PodFormat.Pod1, comment, source, classic, commentField);
-        }
+        List<PodEntry>? entries = TryReadPod1Directory(directory, source.Length, itemCount)
+            ?? throw new PodFormatException(
+                "POD1 directory does not validate as 40-byte entries: " + path);
 
-        List<PodEntry>? extended = TryReadPod1Directory(
-            directory, source.Length, itemCount, Pod164NameSize, Pod164EntrySize);
-        if (extended is not null)
-        {
-            return new PodArchive(PodFormat.Pod1Extended, comment, source, extended, commentField);
-        }
-
-        throw new PodFormatException(
-            "POD1 directory is neither a valid 40-byte nor 72-byte layout: " + path);
+        return new PodArchive(PodFormat.Pod1, comment, source, entries, commentField);
     }
 
     /// <summary>
     /// Attempts to read the whole POD1 directory table with one record layout.
     ///
-    /// <para>The table is accepted only if every record decodes to a plausible
-    /// non-empty archive path whose data range lies inside the file, which is what
-    /// lets the classic and POD1-64 layouts be told apart without a magic value.</para>
+    /// <para>The checks mirror the engine's own volume check plus NUL-termination:
+    /// every record must decode to a NUL-terminated, plausible, non-empty archive path,
+    /// and its size and offset must be non-negative and name a range inside the file.
+    /// Reading them signed matters, because the engine does, so a negative size is a
+    /// rejected volume rather than a 2 GB one.</para>
     /// </summary>
     /// <param name="directory">Header and directory bytes, starting at file offset zero.</param>
     /// <param name="archiveLength">Size of the whole archive, for the payload bounds check.</param>
     /// <param name="itemCount">Directory entry count from the header.</param>
-    /// <param name="nameSize">Width of the name field, 32 (classic) or 64 (POD1-64).</param>
-    /// <param name="entrySize">Width of a whole record, 40 (classic) or 72 (POD1-64).</param>
-    /// <returns>The parsed entries, or null if this layout does not validate.</returns>
+    /// <returns>The parsed entries, or null if the directory does not validate.</returns>
     private static List<PodEntry>? TryReadPod1Directory(byte[] directory, long archiveLength,
-        int itemCount, int nameSize, int entrySize)
+        int itemCount)
     {
+        const int nameSize = PodEntryNameSize;
+        const int entrySize = Pod1EntrySize;
         long tableSize = (long)itemCount * entrySize;
         long tableEnd = Pod1HeaderSize + tableSize;
         if (tableEnd > archiveLength || tableEnd > directory.Length)
@@ -186,9 +170,10 @@ public static class PodArchiveReader
         {
             int entryOffset = Pod1HeaderSize + (i * entrySize);
             string name = DecodeNullTerminated(directory, entryOffset, nameSize);
-            long length = ToUnsigned(ReadInt32Le(directory, entryOffset + nameSize));
-            long offset = ToUnsigned(ReadInt32Le(directory, entryOffset + nameSize + sizeof(int)));
-            if (!IsPlausibleArchivePath(name) || offset < tableEnd
+            long length = ReadInt32Le(directory, entryOffset + nameSize);
+            long offset = ReadInt32Le(directory, entryOffset + nameSize + sizeof(int));
+            if (!IsNulTerminated(directory, entryOffset, nameSize)
+                || !IsPlausibleArchivePath(name) || offset < tableEnd
                 || !IsInBounds(offset, length, archiveLength))
             {
                 return null;
@@ -202,10 +187,24 @@ public static class PodArchiveReader
         return entries;
     }
 
+    /// <summary>True when the name field holds a terminator inside its width.</summary>
+    private static bool IsNulTerminated(byte[] directory, int fieldOffset, int nameSize)
+    {
+        for (int i = fieldOffset; i < fieldOffset + nameSize; i++)
+        {
+            if (directory[i] == 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// True when the name looks like a stored archive path: non-empty, free of
     /// control characters and drive separators, and short enough to be
-    /// NUL-terminated inside a 64-byte field.
+    /// NUL-terminated inside a 32-byte field.
     /// </summary>
     private static bool IsPlausibleArchivePath(string name)
     {

@@ -8,9 +8,6 @@ public enum PodFormat
     /// <summary>Classic POD version 1: 84-byte header, 40-byte records, 31-byte names.</summary>
     Pod1,
 
-    /// <summary>POD1-64: 84-byte header, 72-byte records, 63-byte names.</summary>
-    Pod1Extended,
-
     Pod2,
 
     Epd,
@@ -32,17 +29,8 @@ public enum PodFormat
 ///   84+Nx40   ...    Raw file data, concatenated in directory order
 /// </code>
 ///
-/// <para>The Community Patch 3 extension known as POD1-64 keeps the same 84-byte
-/// header but widens the directory name field from 32 to 64 bytes, so each record
-/// is 72 bytes instead of 40:</para>
-/// <code>
-///       84  N x 72  Directory table, one record per item:
-///                     +  0  64 bytes  Entry name (NUL-padded)
-///                     + 64   4 bytes  Data length (uint32)
-///                     + 68   4 bytes  Data offset from file start (uint32)
-/// </code>
-/// <para>Nothing else changes: the payload is still a concatenation of byte ranges
-/// addressed by each entry's offset and length.</para>
+/// <para>That 40-byte record is the only POD1 directory layout. A directory table
+/// that does not validate as one is a malformed archive and is refused.</para>
 /// </summary>
 public sealed class PodArchive : IDisposable
 {
@@ -115,14 +103,13 @@ public sealed class PodArchive : IDisposable
     public string FormatDisplayName => Format switch
     {
         PodFormat.Pod1 => "POD1",
-        PodFormat.Pod1Extended => "Extended POD1",
         PodFormat.Pod2 => "POD2",
         PodFormat.Epd => "EPD",
         _ => Format.ToString(),
     };
 
-    /// <summary>True for the POD version 1 family: classic and POD1-64 alike.</summary>
-    public bool IsPod1Family => Format is PodFormat.Pod1 or PodFormat.Pod1Extended;
+    /// <summary>True for POD version 1 archives.</summary>
+    public bool IsPod1Family => Format is PodFormat.Pod1;
 
     /// <summary>Entries whose name ends with <paramref name="extension"/>, compared case-insensitively.</summary>
     public IReadOnlyList<PodEntry> GetEntriesByExtension(string extension)

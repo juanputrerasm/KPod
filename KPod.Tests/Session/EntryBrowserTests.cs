@@ -149,15 +149,17 @@ public class EntryBrowserTests
     }
 
     [Fact]
-    public void ProjectedSizeUsesTheWiderDirectoryWhenANameNeedsIt()
+    public void ProjectedSizeAlwaysUsesTheFortyByteDirectory()
     {
-        EntryBrowser classic = new();
-        classic.Entries.Add(new EditableEntry("SHORT.RAW", new byte[10]));
-        Assert.Equal(4 + 80 + 40 + 10, classic.ProjectedArchiveSize);
+        // There is one POD1 directory record and it is 40 bytes, whatever the names are.
+        EntryBrowser browser = new();
+        browser.Entries.Add(new EditableEntry("SHORT.RAW", new byte[10]));
+        Assert.Equal(4 + 80 + 40 + 10, browser.ProjectedArchiveSize);
 
-        EntryBrowser extended = new();
-        extended.Entries.Add(new EditableEntry(new string('A', 40) + ".RAW", new byte[10]));
-        Assert.Equal(4 + 80 + 72 + 10, extended.ProjectedArchiveSize);
+        EntryBrowser oversized = new();
+        oversized.Entries.Add(new EditableEntry(new string('A', 40) + ".RAW", new byte[10]));
+        Assert.Equal(4 + 80 + 40 + 10, oversized.ProjectedArchiveSize);
+        Assert.Single(oversized.OversizedNames);
     }
 
     private static EntryBrowser Browser(params string[] names)

@@ -36,9 +36,27 @@ namespace KPod.Core.Models;
 /// That corpus covers the Evo 2 "v1" bump-material form, a genuine 30-frame animated group,
 /// and the v2/v3 files that carry no LOD header.</para>
 ///
-/// <para>Output is a <see cref="BinModel"/> so that one model viewer draws both formats.
-/// Faces are expanded to a triangle soup because that is the shape the .BIN path already
-/// emits; these models are small enough that the duplication costs nothing.</para>
+/// <para>Output is a <see cref="BinModel"/> emitted into the SAME convention the .BIN
+/// decoder uses, so one model viewer draws both formats with one code path and no per-model
+/// branching. This mirrors JSTruckViewer's src/worker/evo/smf-parser.js, which is the
+/// reference implementation for Evo models.</para>
+///
+/// <para>Evo is Y-up and .BIN is Z-up, so Y and Z are swapped here. The renderer then
+/// applies its own (x, z, -y) transform to every model alike, and the two compose to
+/// (x, y, -z): Evo's Z is negated on the way to the screen. That negation is not cosmetic.
+/// Getting it wrong leaves the model a mirror image of itself, which reads as the texture
+/// being mirrored rather than as the geometry being flipped, because a mirrored mesh still
+/// carries its own UVs.</para>
+///
+/// <para>The swap flips handedness, which is what the renderer wants: it draws meshes with
+/// front-face culling because .BIN geometry is wound inward, so leaving the .SMF winding
+/// untouched puts these faces on the same side. Normals are negated for the same reason.</para>
+///
+/// <para>V is inverted here for the same reason the .BIN path inverts its own: Evo's V runs
+/// top-down and the renderer uploads every texture flipped, so the two cancel.</para>
+///
+/// <para>Faces are expanded to a triangle soup because that is the shape the .BIN path
+/// already emits; these models are small enough that the duplication costs nothing.</para>
 /// </summary>
 public static class SmfModelDecoder
 {
@@ -160,14 +178,15 @@ public static class SmfModelDecoder
                         throw new ArgumentException(name + ": truncated vertex block in \"" + groupName + "\"");
                     if (f != 0) continue;
                     string[] p = line.Split(',');
+                    // Evo (x, y, z) -> .BIN convention (x, z, y); normals negated with it.
                     vx[v * 3] = ParseFloat(p.ElementAtOrDefault(0));
-                    vx[v * 3 + 1] = ParseFloat(p.ElementAtOrDefault(1));
-                    vx[v * 3 + 2] = ParseFloat(p.ElementAtOrDefault(2));
-                    vn[v * 3] = ParseFloat(p.ElementAtOrDefault(3));
-                    vn[v * 3 + 1] = ParseFloat(p.ElementAtOrDefault(4));
-                    vn[v * 3 + 2] = ParseFloat(p.ElementAtOrDefault(5));
+                    vx[v * 3 + 1] = ParseFloat(p.ElementAtOrDefault(2));
+                    vx[v * 3 + 2] = ParseFloat(p.ElementAtOrDefault(1));
+                    vn[v * 3] = -ParseFloat(p.ElementAtOrDefault(3));
+                    vn[v * 3 + 1] = -ParseFloat(p.ElementAtOrDefault(5));
+                    vn[v * 3 + 2] = -ParseFloat(p.ElementAtOrDefault(4));
                     vt[v * 2] = ParseFloat(p.ElementAtOrDefault(6));
-                    vt[v * 2 + 1] = ParseFloat(p.ElementAtOrDefault(7));
+                    vt[v * 2 + 1] = 1f - ParseFloat(p.ElementAtOrDefault(7));
                 }
             }
 
@@ -225,11 +244,7 @@ public static class SmfModelDecoder
         string format = "SMF v" + fileVersion.ToString(CultureInfo.InvariantCulture)
             + (lodEnabled ? " (LOD)" : string.Empty);
         return new BinModel(name, format, 65536, 0f, null, default, totalVertices, totalPolygons,
-            textureNames, meshes, warnings)
-        {
-            UpAxis = "Y",
-            UvOrigin = "top-left",
-        };
+            textureNames, meshes, warnings);
     }
 
     private static int ParseInt(string? value) =>

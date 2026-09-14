@@ -39,21 +39,22 @@ public class PodExtractServiceTests
     }
 
     [Fact]
-    public void ExtractsLongPod164PathsInFull()
+    public void ExtractsAFullBudgetNestedPathInFull()
     {
         using TempDir temp = new();
-        const string longName = @"MODELS\TRUCKS\CUSTOM_BIGFOOT_WHEEL01.RAW";
-        string pod = temp.WriteFile("long.pod", PodFixture.BuildPod164(
+        // 31 characters, the most a POD1 directory field can hold.
+        const string longName = @"MODELS\TRUCKS\BIGFOOTWHEEL1.RAW";
+        string pod = temp.WriteFile("long.pod", PodFixture.BuildPod1(
             new PodFile(longName, PodText.Latin1.GetBytes("wheel"))));
         string destination = temp.CreateDirectory("long-out");
 
         PodSession session = NewSession(pod, destination, preserveFolders: true);
-        Assert.Equal(PodFormat.Pod1Extended, session.OpenArchive!.Format);
+        Assert.Equal(PodFormat.Pod1, session.OpenArchive!.Format);
         new PodExtractService(session).ExtractAll(null);
 
         Assert.Equal(
             "wheel",
-            File.ReadAllText(Path.Combine(destination, "MODELS", "TRUCKS", "CUSTOM_BIGFOOT_WHEEL01.RAW")));
+            File.ReadAllText(Path.Combine(destination, "MODELS", "TRUCKS", "BIGFOOTWHEEL1.RAW")));
     }
 
     [Fact]

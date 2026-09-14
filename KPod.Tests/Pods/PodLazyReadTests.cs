@@ -28,17 +28,18 @@ public class PodLazyReadTests
     }
 
     [Fact]
-    public void Pod164PayloadsReadBackExactly()
+    public void FullBudgetNamePayloadsReadBackExactly()
     {
         using TempDir temp = new();
         byte[] payload = PodFixture.Payload(2048);
-        string name = new string('A', 40) + ".RAW";
-        string path = temp.WriteFile("lazy164.pod",
-            PodFixture.BuildPod164(new PodFile(name, payload)));
+        string name = new string('A', 27) + ".RAW";   // 31 characters
+        string path = temp.WriteFile("lazy31.pod",
+            PodFixture.BuildPod1(new PodFile(name, payload)));
 
         using PodArchive archive = PodArchiveReader.Read(path);
 
-        Assert.Equal(PodFormat.Pod1Extended, archive.Format);
+        Assert.Equal(PodFormat.Pod1, archive.Format);
+        Assert.Equal(name, archive.Entries[0].Name);
         Assert.Equal(payload, archive.GetEntryBytes(archive.Entries[0]));
     }
 

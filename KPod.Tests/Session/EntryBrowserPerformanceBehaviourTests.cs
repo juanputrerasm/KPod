@@ -155,14 +155,14 @@ public class EntryBrowserPerformanceBehaviourTests
     }
 
     [Fact]
-    public void ProjectedSizeMatchesTheWriterForTheLongDirectoryToo()
+    public void AnOversizedNameIsReportedRatherThanWideningTheDirectory()
     {
-        EntryBrowser browser = WithFiles(new string('A', 40) + ".RAW", "READ.TXT");
+        string oversized = new string('A', 40) + ".RAW";
+        EntryBrowser browser = WithFiles(oversized, "READ.TXT");
 
-        byte[] written = PodArchiveWriter.BuildBytes(string.Empty, browser.ToBlobs());
-
-        Assert.Equal(PodFormat.Pod1Extended, browser.ProjectedFormat);
-        Assert.Equal(written.Length, browser.ProjectedArchiveSize);
+        Assert.Equal([oversized], browser.OversizedNames);
+        Assert.Throws<PodFormatException>(
+            () => PodArchiveWriter.BuildBytes(string.Empty, browser.ToBlobs()));
     }
 
     [Fact]

@@ -203,9 +203,7 @@ public sealed class EntryBrowser
     {
         get
         {
-            int entrySize = ProjectedFormat == PodFormat.Pod1Extended
-                ? PodArchiveWriter.LongNameFieldSize + 8
-                : PodArchiveWriter.ClassicNameFieldSize + 8;
+            const int entrySize = PodArchiveWriter.ClassicNameFieldSize + 8;
             long total = 4 + 80 + ((long)_entries.Count * entrySize);
             foreach (EditableEntry entry in _entries)
             {
@@ -216,21 +214,27 @@ public sealed class EntryBrowser
         }
     }
 
-    /// <summary>The POD1 layout the current names would require.</summary>
-    public PodFormat ProjectedFormat
+    /// <summary>
+    /// Entry names a POD1 save would refuse, because the whole stored path plus its
+    /// terminator - and, on a .RAW that carries one, the embedded .ACT palette record -
+    /// does not fit the 32-byte directory field. The UI needs to name them, because the
+    /// remedy is to shorten them before saving.
+    /// </summary>
+    public IReadOnlyList<string> OversizedNames
     {
         get
         {
+            List<string> oversized = [];
             foreach (EditableEntry entry in _entries)
             {
                 if (PodArchiveWriter.RequiredNameFieldBytes(entry.Name, entry.EmbeddedPaletteName)
                     > PodArchiveWriter.ClassicNameFieldSize)
                 {
-                    return PodFormat.Pod1Extended;
+                    oversized.Add(entry.Name);
                 }
             }
 
-            return PodFormat.Pod1;
+            return oversized;
         }
     }
 

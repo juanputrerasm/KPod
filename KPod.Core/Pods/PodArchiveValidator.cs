@@ -26,12 +26,12 @@ public static class PodArchiveValidator
             // of every payload.
             PodArchiveWriter.ValidateLayout(comment, blobs, new PodWriteOptions(requested, null, []));
         }
-        catch (Exception ex) when (ex is ArgumentException or OverflowException)
+        // PodFormatException is an IOException, and an overlong name is now reported
+        // through it rather than absorbed by a wider directory.
+        catch (Exception ex) when (ex is ArgumentException or OverflowException or IOException)
         {
             errors.Add(ex.Message);
         }
-        if (actual == PodFormat.Pod1Extended && requested == PodFormat.Pod1)
-            warnings.Add("The archive requires the Extended POD1 directory.");
         return new(actual, errors, warnings);
     }
 

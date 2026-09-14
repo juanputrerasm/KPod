@@ -9,21 +9,24 @@ public sealed record PodFile(string Name, byte[] Bytes)
 }
 
 /// <summary>
-/// Builds POD1, POD1-64, POD2 and EPD archives byte-for-byte so the reader can be
-/// tested without shipping binary fixtures.
+/// Builds POD1, POD2 and EPD archives byte-for-byte so the reader can be tested
+/// without shipping binary fixtures.
 /// </summary>
 public static class PodFixture
 {
-    public const int ClassicNameSize = 32;
-    public const int ExtendedNameSize = 64;
+    public const int Pod1NameSize = 32;
 
-    /// <summary>Classic POD1: 32-byte name field, 40-byte records.</summary>
+    /// <summary>POD1: 32-byte name field, 40-byte records.</summary>
     public static byte[] BuildPod1(params PodFile[] files) =>
-        BuildPod1(ClassicNameSize, "hand written", files);
+        BuildPod1(Pod1NameSize, "hand written", files);
 
-    /// <summary>POD1-64: 64-byte name field, 72-byte records.</summary>
-    public static byte[] BuildPod164(params PodFile[] files) =>
-        BuildPod1(ExtendedNameSize, "hand written", files);
+    /// <summary>
+    /// A POD1-shaped header over a directory of 72-byte records with 64-byte name
+    /// fields. Malformed: the reader must refuse it. Built only so that refusal can
+    /// be tested.
+    /// </summary>
+    public static byte[] BuildSeventyTwoByteDirectory(params PodFile[] files) =>
+        BuildPod1(64, "hand written", files);
 
     /// <summary>
     /// A POD1 archive with an explicit directory-record width, so a test can build
